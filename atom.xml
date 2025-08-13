@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>DevNull</title>
+  
+  
+  <link href="https://dev-null-sec.github.io/atom.xml" rel="self"/>
+  
+  <link href="https://dev-null-sec.github.io/"/>
+  <updated>2025-08-13T01:49:09.274Z</updated>
+  <id>https://dev-null-sec.github.io/</id>
+  
+  <author>
+    <name>DevNull</name>
+    
+  </author>
+  
+  <generator uri="https://hexo.io/">Hexo</generator>
+  
+  <entry>
+    <title>这招太狠了</title>
+    <link href="https://dev-null-sec.github.io/posts/2025-05-06-%E8%BF%99%E6%8B%9B%E5%A4%AA%E7%8B%A0%E4%BA%86/"/>
+    <id>https://dev-null-sec.github.io/posts/2025-05-06-%E8%BF%99%E6%8B%9B%E5%A4%AA%E7%8B%A0%E4%BA%86/</id>
+    <published>2025-05-06T09:03:12.000Z</published>
+    <updated>2025-08-13T01:49:09.274Z</updated>
+    
+    <content type="html"><![CDATA[<p>这招太狠了wc</p>]]></content>
+    
+    
+      
+      
+    <summary type="html">&lt;p&gt;这招太狠了wc&lt;/p&gt;
+</summary>
+      
+    
+    
+    
+    <category term="这招太狠了666" scheme="https://dev-null-sec.github.io/categories/%E8%BF%99%E6%8B%9B%E5%A4%AA%E7%8B%A0%E4%BA%86666/"/>
+    
+    
+    <category term="666这招太狠了" scheme="https://dev-null-sec.github.io/tags/666%E8%BF%99%E6%8B%9B%E5%A4%AA%E7%8B%A0%E4%BA%86/"/>
+    
+  </entry>
+  
+  <entry>
+    <title>你好，世界！</title>
+    <link href="https://dev-null-sec.github.io/posts/hello-world/"/>
+    <id>https://dev-null-sec.github.io/posts/hello-world/</id>
+    <published>2018-05-06T09:03:12.000Z</published>
+    <updated>2025-08-12T11:46:07.867Z</updated>
+    
+    <content type="html"><![CDATA[<p>欢迎使用 <code>Kratos : Rebirth</code> 这个我们精心打造的 Hexo 主题！希望能在接下来的旅途中与您相伴，共同创造出更多难以忘怀的美好体验。</p>]]></content>
+    
+    
+      
+      
+    <summary type="html">&lt;p&gt;欢迎使用 &lt;code&gt;Kratos : Rebirth&lt;/code&gt; 这个我们精心打造的 Hexo 主题！希望能在接下来的旅途中与您相伴，共同创造出更多难以忘怀的美好体验。&lt;/p&gt;
+</summary>
+      
+    
+    
+    
+    <category term="全新体验" scheme="https://dev-null-sec.github.io/categories/%E5%85%A8%E6%96%B0%E4%BD%93%E9%AA%8C/"/>
+    
+    
+    <category term="欢迎" scheme="https://dev-null-sec.github.io/tags/%E6%AC%A2%E8%BF%8E/"/>
+    
+  </entry>
+  
+</feed>
