@@ -7,8 +7,8 @@
     <link rel="icon" href="/assets/devnull.png">
   
   
-  <title>查看动态 |  </title>
-  <link rel="canonical" href="https://dev-null-sec.github.io/posts/1/">
+  <title>Linux从0到1(胎教级)  -01 |  </title>
+  <link rel="canonical" href="https://dev-null-sec.github.io/posts/Linux%E4%BB%8E0%E5%88%B01(%E8%83%8E%E6%95%99%E7%BA%A7)%20%20-01/">
   <meta name="author" content="DevNull" />
   <meta http-equiv="Cache-Control" content="no-transform" />
   <meta http-equiv="Cache-Control" content="no-siteapp" />
@@ -19,15 +19,15 @@
   
     <meta name="keywords" content="" />
   
-  <meta name="description" content="Go for broke.">
+  <meta name="description" content="前言: ​	首先,这不是一篇有深入研究性的文章,我是一名正在学习路上的运维新人。写这个教程，首先是为了系统性地巩固我自己的学习成果——毕竟，输出是最好的学习方式。 ​	同时，我也希望这篇“胎教级”的入门指南，能帮助和我一样刚接触Linux的朋友们快速上手，少走弯路。因此，本系列不会深入到复杂的底层原理，而是聚焦于那些最高频、最实用的基础命令，目标是让你能快速“跑起来”。 ​	如果文中有任何疏漏或错">
 <meta property="og:type" content="article">
-<meta property="og:title" content="查看动态">
-<meta property="og:url" content="https://dev-null-sec.github.io/posts/1/index.html">
+<meta property="og:title" content="Linux从0到1(胎教级)  -01">
+<meta property="og:url" content="https://dev-null-sec.github.io/posts/Linux%E4%BB%8E0%E5%88%B01(%E8%83%8E%E6%95%99%E7%BA%A7)%20%20-01/index.html">
 <meta property="og:site_name" content=" ">
-<meta property="og:description" content="Go for broke.">
+<meta property="og:description" content="前言: ​	首先,这不是一篇有深入研究性的文章,我是一名正在学习路上的运维新人。写这个教程，首先是为了系统性地巩固我自己的学习成果——毕竟，输出是最好的学习方式。 ​	同时，我也希望这篇“胎教级”的入门指南，能帮助和我一样刚接触Linux的朋友们快速上手，少走弯路。因此，本系列不会深入到复杂的底层原理，而是聚焦于那些最高频、最实用的基础命令，目标是让你能快速“跑起来”。 ​	如果文中有任何疏漏或错">
 <meta property="og:locale">
-<meta property="article:published_time" content="2025-08-23T11:23:29.229Z">
-<meta property="article:modified_time" content="2025-08-23T11:23:29.229Z">
+<meta property="article:published_time" content="2025-08-24T10:55:29.000Z">
+<meta property="article:modified_time" content="2025-08-24T11:41:59.748Z">
 <meta property="article:author" content="DevNull">
 <meta property="article:tag" content="hexo">
 <meta property="article:tag" content="运维">
@@ -198,12 +198,14 @@
         
 
             <article itemscope itemtype="https://schema.org/Article">
-    <link itemprop="mainEntityOfPage" href="https://dev-null-sec.github.io/posts/1/">
+    <link itemprop="mainEntityOfPage" href="https://dev-null-sec.github.io/posts/Linux%E4%BB%8E0%E5%88%B01(%E8%83%8E%E6%95%99%E7%BA%A7)%20%20-01/">
     <div class="kratos-hentry kratos-page-inner clearfix">
         <header class="kratos-page-header">
             
+                <h1 class="kratos-page-title text-center" itemprop="name headline">Linux从0到1(胎教级)  -01</h1>
+            
             <ul class="kratos-page-meta text-center">
-                <li><time datetime="2025-08-23T11:23:29.229Z" itemprop="datePublished"><i class="fa fa-calendar"></i> 2025-08-23</time></li>
+                <li><time datetime="2025-08-24T10:55:29.000Z" itemprop="datePublished"><i class="fa fa-calendar"></i> 2025-08-24</time></li>
                 <li itemprop="author" itemscope itemtype="https://schema.org/Person">
                     <i class="fa fa-user"></i> 作者 <span itemprop="name">DevNull</span>
                 </li>
@@ -212,7 +214,7 @@
                         <i class="fa fa-edit"></i> 
                         
                         
-                            0
+                            614
                         
                         字
                     </li>
@@ -225,8 +227,25 @@
             
             
             
+                <div class="kratos-post-inner-toc toc-div-class" >
+                    <ol class="toc"><li class="toc-item toc-level-5"><a class="toc-link" href="#1-%E5%88%9D%E8%AF%86Linux"><span class="toc-number">1.</span> <span class="toc-text">1. 初识Linux</span></a></li></ol>
+                </div>
+            
             <hr />
-            <div itemprop="articleBody"></div>
+            <div itemprop="articleBody"><p>前言:</p>
+<p>​	首先,这不是一篇有深入研究性的文章,我是一名正在学习路上的运维新人。写这个教程，首先是为了系统性地巩固我自己的学习成果——毕竟，输出是最好的学习方式。</p>
+<p>​	同时，我也希望这篇“胎教级”的入门指南，能帮助和我一样刚接触Linux的朋友们快速上手，少走弯路。因此，本系列不会深入到复杂的底层原理，而是<strong>聚焦于那些最高频、最实用的基础命令</strong>，目标是让你能快速“跑起来”。</p>
+<p>​	如果文中有任何疏漏或错误，非常欢迎大家在评论区指正，我们一起交流，共同进步！</p>
+<h5 id="1-初识Linux"><a href="#1-初识Linux" class="headerlink" title="1. 初识Linux"></a>1. 初识Linux</h5><p>在看本教学之前,请确保你已经完成以下操作:</p>
+<p>(1)一台安装了Linux系统（推荐CentOS或Ubuntu）的虚拟机。如果还没有，可以参考这篇教程完成安装： <a target="_blank" rel="noopener" href="https://blog.csdn.net/qq_51429077/article/details/126318540">Linux安装教程（超超超级详细）-CSDN博客</a></p>
+<p>(2)linux设置并登录root用户进行操作</p>
+<p>(3)打开一个linux的终端</p>
+<p>ok,如果上面的你都没问题了,那么我们可以来认识linux这个与window完全不一样的操作系统了.</p>
+<p>首先,关于为什么学习linux?</p>
+<p>好了，我知道你可能对“Linux的历史”和“开源精神”这类长篇大论不感兴趣。我们来点实际的：</p>
+<p><strong>一句话：无论你想做后端开发、云计算、大数据还是运维，Linux都是你绕不开的内功心法。学好它，就是为你未来的技术生涯铺路。</strong></p>
+<p>不管你学linux是什么目的,我相信你找教程来看就是为了学习快速使用linux,话不多说，我们立刻进入正题.</p>
+</div>
         </div>
         
             <div class="kratos-copyright text-center clearfix">
@@ -243,7 +262,7 @@
                     
                 </div>
                 <div class="pull-date">
-                    <time datetime="2025-08-23T11:23:29.229Z" itemprop="dateModified">最后编辑：2025-08-23</time>
+                    <time datetime="2025-08-24T11:41:59.748Z" itemprop="dateModified">最后编辑：2025-08-24</time>
                 </div>
             </div>
         </footer>
@@ -251,10 +270,10 @@
     
         <nav class="navigation post-navigation clearfix" role="navigation">
             
-            
-            <div class="nav-next clearfix">
-                <a title=" shell从0到1" href="/posts/shell从0到1/">下一篇 <i class="fa fa-angle-right"></i></a>
+            <div class="nav-previous clearfix">
+                <a title=" shell从0到1" href="/posts/shell从0到1/"><i class="fa fa-angle-left"></i> 上一篇</a>
             </div>
+            
             
         </nav>
     
@@ -332,6 +351,18 @@ async>
             
                     <div class="sticky-area">
                 
+                    <aside id="krw-toc" class="widget widget-kratos-toc clearfix toc-div-class" >
+    <div class="photo-background"></div>
+    <h4 class="widget-title no-after">
+        <i class="fa fa-compass"></i>
+        文章目录
+        <span class="toc-progress-bar" role="progressbar" aria-label="阅读进度："></span>
+    </h4>
+    <div class="textwidget">
+        <ol class="toc"><li class="toc-item toc-level-5"><a class="toc-link" href="#1-%E5%88%9D%E8%AF%86Linux"><span class="toc-text">1. 初识Linux</span></a></li></ol>
+    </div>
+</aside>
+                
                 
 
             
@@ -346,11 +377,14 @@ async>
         
           
           
-            <a class="list-group-item" href="/posts/shell%E4%BB%8E0%E5%88%B01/"><i class="fa fa-book"></i> shell从0到1</a>
+            <a class="list-group-item" href="/posts/Linux%E4%BB%8E0%E5%88%B01(%E8%83%8E%E6%95%99%E7%BA%A7)%20%20-01/"><i class="fa fa-book"></i> Linux从0到1(胎教级)  -01</a>
             
           
         
           
+          
+            <a class="list-group-item" href="/posts/shell%E4%BB%8E0%E5%88%B01/"><i class="fa fa-book"></i> shell从0到1</a>
+            
           
         
       </ul>
