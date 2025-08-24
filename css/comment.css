@@ -1,0 +1,123 @@
+/*
+ * ===================================================================
+ *  Giscus 美化主题 - “晴空汽水” (Clear Sky Soda)
+ *  适配浅色系、二次元风格博客
+ * ===================================================================
+ */
+
+/* --- 基础与全局设置 --- */
+:root {
+  /* 整体背景色，淡蓝色，几乎为白色 */
+  --giscus-main-bg: #f0f8ff; 
+  /* 整体边框颜色 */
+  --giscus-main-border-color: #d6eaff;
+  /* 整体圆角大小 */
+  --giscus-main-border-radius: 16px;
+  /* 整体阴影，非常柔和 */
+  --giscus-main-box-shadow: 0 8px 24px rgba(100, 150, 200, 0.15);
+
+  /* 主要文字颜色，深蓝灰 */
+  --giscus-text-color: #3c4858;
+  /* 次要文字颜色，如时间戳 */
+  --giscus-text-color-secondary: #8492a6;
+  /* 链接颜色 */
+  --giscus-link-color: #00aaff;
+  
+  /* 输入框背景色 */
+  --giscus-input-bg: #ffffff;
+  /* 输入框边框颜色 */
+  --giscus-input-border-color: #dce8f2;
+  /* 输入框获取焦点时的边框颜色 */
+  --giscus-input-border-color-focus: #87ceeb; /* 天蓝色 */
+
+  /* 按钮背景色 */
+  --giscus-button-bg: #87ceeb; /* 天蓝色 */
+  /* 按钮文字颜色 */
+  --giscus-button-color: #ffffff;
+  /* 按钮悬浮时的背景色 */
+  --giscus-button-bg-hover: #98d8f0;
+
+  /* 评论条目之间的分割线颜色 */
+  --giscus-comment-border-color: #e0effa;
+}
+
+/* --- 应用到 Giscus 容器 --- */
+main.giscus-frame {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  background-color: var(--giscus-main-bg);
+  border-radius: var(--giscus-main-border-radius);
+  box-shadow: var(--giscus-main-box-shadow);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  padding: 25px;
+}
+
+/* --- 评论输入框 --- */
+.giscus-textarea,
+.giscus-input {
+  background-color: var(--giscus-input-bg) !important;
+  border: 1px solid var(--giscus-input-border-color) !important;
+  border-radius: 10px !important;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.04);
+}
+
+.giscus-textarea:focus,
+.giscus-input:focus {
+  border-color: var(--giscus-input-border-color-focus) !important;
+  box-shadow: 0 0 8px rgba(135, 206, 235, 0.4) !important;
+}
+
+/* --- 提交按钮 --- */
+.giscus-button {
+  background: linear-gradient(135deg, var(--giscus-button-bg), var(--giscus-button-bg-hover)) !important;
+  color: var(--giscus-button-color) !important;
+  border: none !important;
+  border-radius: 8px !important;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(135, 206, 235, 0.4);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.giscus-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(135, 206, 235, 0.5);
+}
+
+/* --- 已发布的评论 --- */
+.giscus-timeline-item {
+  border-top: 1px solid var(--giscus-comment-border-color) !important;
+  padding-top: 20px;
+}
+
+/* 移除第一条评论上面的分割线 */
+.giscus-timeline > .giscus-timeline-item:first-child {
+  border-top: none !important;
+}
+
+/* 头像圆角 */
+.giscus-avatar {
+  border-radius: 50% !important;
+}
+
+/* 评论头部，包括作者和时间 */
+.giscus-comment-header {
+  background: none !important;
+}
+
+/* 评论内容区域 */
+.giscus-comment-content {
+  background: none !important;
+  border-radius: 10px;
+}
+
+/* 链接样式 */
+.giscus-comment-content a {
+  color: var(--giscus-link-color) !important;
+  text-decoration: none !important;
+  border-bottom: 1px dashed var(--giscus-link-color);
+  transition: color 0.3s ease, border-bottom-color 0.3s ease;
+}
+.giscus-comment-content a:hover {
+  color: #0077b3 !important;
+  border-bottom-color: #0077b3;
+}

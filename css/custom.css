@@ -1,0 +1,22 @@
+/* custom.css */
+.giscus-frame {
+  background: transparent !important;
+}
+
+/* custom.css */
+
+/*
+ * ===================================================================
+ *  Giscus 管理菜单“免死金牌”
+ *  确保编辑/删除按钮永远可见
+ * ===================================================================
+ */
+.giscus-comment-header .giscus-menu-button {
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.giscus-menu {
+  z-index: 9999 !important; /* 确保下拉菜单在最顶层 */
+}
