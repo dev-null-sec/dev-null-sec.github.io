@@ -84,7 +84,10 @@
 
   <!-- 额外的追加注入项 -->
   
-    <link rel="stylesheet" href="/css/custom.css">
+    <link rel="preconnect" href="https://giscus.app">
+<link rel="preconnect" href="https://avatars.githubusercontent.com">
+<link rel="stylesheet" href="/css/custom.css">
+
   
 <meta name="generator" content="Hexo 7.3.0"></head>
 
@@ -262,7 +265,26 @@
     
     
         <div class="comment-post">
-            <div id="giscus-container"></div>
+            <div id="giscus-container">
+  <div class="giscus-skeleton">
+    <div class="skeleton-item skeleton-input"></div>
+    <div class="skeleton-item skeleton-comment">
+      <div class="skeleton-avatar"></div>
+      <div class="skeleton-lines">
+        <div class="skeleton-line" style="width: 20%;"></div>
+        <div class="skeleton-line" style="width: 80%;"></div>
+        <div class="skeleton-line" style="width: 60%;"></div>
+      </div>
+    </div>
+    <div class="skeleton-item skeleton-comment">
+      <div class="skeleton-avatar"></div>
+      <div class="skeleton-lines">
+        <div class="skeleton-line" style="width: 25%;"></div>
+        <div class="skeleton-line" style="width: 70%;"></div>
+      </div>
+    </div>
+  </div>
+</div>
 
         </div>
     
@@ -457,77 +479,60 @@
   <script>
   (function() {
     const GiscusLoader = {
-      // 你的 Giscus 配置，集中管理
-      config: {
+      config: { // 你的 Giscus 配置
         repo: "dev-null-sec/blog_comments",
         repoId: "R_kgDOPi5-hA",
-        category: "General", // 建议使用我们之前创建的 General 或 Comments
-        categoryId: "DIC_kwDOPi5-hM4Cuge6", // 【重要】请确保这是你新分类的ID！
+        category: "General", 
+        categoryId: "DIC_kwDOPi5-hM4Cuge6", // 【重要】确保这是你新分类的ID！
         mapping: "pathname",
-        strict: "0",
-        reactionsEnabled: "1",
-        emitMetadata: "0",
-        inputPosition: "top",
-        theme: "https://cdn.jsdelivr.net/gh/dev-null-sec/image@main/img/20250824183215507.css", // 【重要】这是你的美化主题CSS
+        strict: "0", reactionsEnabled: "1", emitMetadata: "0", inputPosition: "top",
+        theme: "https://cdn.jsdelivr.net/gh/dev-null-sec/image@main/img/20250825092346859.css",
         lang: "zh-CN"
       },
 
-      // 高度修正器
-      heightCorrector: function(event) {
-        const HEIGHT_BUFFER = 150;
+      // 高度修正器 & 切换导演
+      messageHandler: function(event) {
         if (event.origin !== 'https://giscus.app' || !(typeof event.data === 'object' && event.data.giscus)) return;
         const giscusIframe = document.querySelector('iframe.giscus-frame');
         if (!giscusIframe) return;
+
+        // 1. 修正高度
+        const HEIGHT_BUFFER = 150;
         const giscusHeight = event.data.giscus.frameHeight;
         if (giscusHeight) {
           giscusIframe.style.height = (giscusHeight + HEIGHT_BUFFER) + 'px';
         }
+
+        // 2. 【魔术切换】Giscus 已准备就绪，隐藏骨架屏，显示真实评论区
+        const skeleton = document.querySelector('.giscus-skeleton');
+        if (skeleton && !skeleton.classList.contains('is-loaded')) {
+          skeleton.classList.add('is-loaded');
+          giscusIframe.style.opacity = 1; // 让真实的评论区淡入
+        }
       },
       
-      // 核心：加载和重载 Giscus 的函数
       load: function() {
         const container = document.getElementById('giscus-container');
-        if (!container) {
-          // 如果页面上没有我们的“引信”，就什么都不做
-          return;
-        }
+        if (!container) return;
+        const existingIframe = container.querySelector('iframe.giscus-frame');
+        if (existingIframe) return; // 如果已经加载了，就不要重复加载
 
-        // 先清空旧的 Giscus 实例，防止 PJAX 切换页面时重复加载
-        while (container.firstChild) {
-          container.removeChild(container.firstChild);
-        }
-
-        // 手动创建一个 script 标签
         const script = document.createElement('script');
         script.src = "https://giscus.app/client.js";
-        script.async = true;
-        script.crossOrigin = "anonymous";
-
-        // 将我们的配置，逐一设置到 script 的 data 属性上
+        script.async = true; script.crossOrigin = "anonymous";
         for (const key in this.config) {
           script.setAttribute('data-' + key.replace(/([A-Z])/g, '-$1').toLowerCase(), this.config[key]);
         }
-
-        // 将 script 注入到容器中，触发加载
         container.appendChild(script);
       },
 
-      // 初始化
       init: function() {
-        // 绑定高度修正器
-        window.addEventListener('message', this.heightCorrector);
-        
-        // 1. 正常页面加载时，执行一次
+        window.addEventListener('message', this.messageHandler);
         document.addEventListener('DOMContentLoaded', this.load.bind(this));
-        
-        // 2. 【核心】监听 PJAX 事件，在主题切换页面内容后，再次执行！
-        // 不同的主题，事件名可能不同，'pjax:complete' 和 'pjax:end' 是最常见的
         document.addEventListener('pjax:complete', this.load.bind(this));
         document.addEventListener('pjax:end', this.load.bind(this));
       }
     };
-
-    // 启动！
     GiscusLoader.init();
   })();
 </script>
