@@ -1,0 +1,1734 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>DevNull</title><description>No description</description><link>https://dev-null-sec.github.io/</link><language>zh_CN</language><item><title>CI/CD 进阶实战与踩坑记录</title><link>https://dev-null-sec.github.io/posts/ci-cd%E8%BF%9B%E9%98%B6%E5%AE%9E%E6%88%98%E4%B8%8E%E8%B8%A9%E5%9D%91%E8%AE%B0%E5%BD%95/</link><guid isPermaLink="true">https://dev-null-sec.github.io/posts/ci-cd%E8%BF%9B%E9%98%B6%E5%AE%9E%E6%88%98%E4%B8%8E%E8%B8%A9%E5%9D%91%E8%AE%B0%E5%BD%95/</guid><description>深入实践 CI/CD 进阶功能，包括 SonarQube 代码扫描、Prometheus+Grafana+Loki 全链路监控、Argo Rollouts 灰度发布，以及资源优化和踩坑经验</description><pubDate>Fri, 20 Jun 2025 00:00:00 GMT</pubDate><content:encoded>&lt;p&gt;前面把基础的 CI/CD 流水线跑通后，我又花了几天时间折腾了一些进阶功能。这篇记录一下代码扫描、全链路监控、灰度发布这些东西，以及中途遇到的一些坑。&lt;/p&gt;
+&lt;h2&gt;从一个 Go 项目开始&lt;/h2&gt;
+&lt;p&gt;之前用的都是现成的 Nginx 镜像，这次想搞点真实的应用，就写了个简单的 Go Web 服务。&lt;/p&gt;
+&lt;h3&gt;创建项目&lt;/h3&gt;
+&lt;p&gt;我本地的 Go 环境是 1.25，直接开干：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;mkdir go-demo-app
+cd go-demo-app
+go mod init go-demo-app
+
+go get github.com/prometheus/client_golang/prometheus/promhttp
+go mod tidy
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;写代码&lt;/h3&gt;
+&lt;p&gt;&lt;code&gt;main.go&lt;/code&gt; 很简单，就三个接口：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;package main
+
+import (
+	&quot;fmt&quot;
+	&quot;net/http&quot;
+	&quot;os&quot;
+
+	&quot;github.com/prometheus/client_golang/prometheus/promhttp&quot;
+)
+
+var version = &quot;v1.0.0&quot;
+
+func main() {
+	// 主页面
+	http.HandleFunc(&quot;/&quot;, func(w http.ResponseWriter, r *http.Request) {
+		hostname, _ := os.Hostname()
+		fmt.Printf(&quot;Received request from %s\n&quot;, r.RemoteAddr)
+		fmt.Fprintf(w, &quot;&amp;lt;h1&amp;gt;Go Demo App&amp;lt;/h1&amp;gt;&quot;)
+		fmt.Fprintf(w, &quot;&amp;lt;div&amp;gt;Version: &amp;lt;strong&amp;gt;%s&amp;lt;/strong&amp;gt;&amp;lt;/div&amp;gt;&quot;, version)
+		fmt.Fprintf(w, &quot;&amp;lt;div&amp;gt;Hostname: %s&amp;lt;/div&amp;gt;&quot;, hostname)
+	})
+
+	// 健康检查
+	http.HandleFunc(&quot;/health&quot;, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(&quot;ok&quot;))
+	})
+
+	// Prometheus 监控指标
+	http.Handle(&quot;/metrics&quot;, promhttp.Handler())
+
+	fmt.Printf(&quot;Starting server on port 8080, version: %s\n&quot;, version)
+	if err := http.ListenAndServe(&quot;:8080&quot;, nil); err != nil {
+		fmt.Printf(&quot;Error starting server: %s\n&quot;, err)
+	}
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;Dockerfile&lt;/h3&gt;
+&lt;p&gt;用的是多阶段构建，最终镜像只有十几 MB：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;# 构建阶段
+FROM reg.westos.org/library/golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+# Go 代理加速
+ENV GOPROXY=https://goproxy.cn,direct
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o go-demo-app .
+
+# 运行阶段
+FROM reg.westos.org/library/alpine:latest
+
+WORKDIR /root/
+
+COPY --from=builder /app/go-demo-app .
+
+EXPOSE 8080
+
+CMD [&quot;./go-demo-app&quot;]
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;因为 Kaniko 访问不了 DockerHub，我提前把基础镜像推到了 Harbor：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;docker pull golang:1.25-alpine
+docker pull alpine:latest
+
+docker login reg.westos.org -u admin -p 12345
+
+docker tag golang:1.25-alpine reg.westos.org/library/golang:1.25-alpine
+docker tag alpine:latest reg.westos.org/library/alpine:latest
+
+docker push reg.westos.org/library/golang:1.25-alpine
+docker push reg.westos.org/library/alpine:latest
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;推送到 Gitea&lt;/h3&gt;
+&lt;p&gt;在 Gitea 创建 &lt;code&gt;go-demo-app&lt;/code&gt; 仓库，然后推上去：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;git init
+git add .
+git commit -m &quot;Initial commit: Go app with metrics&quot;
+git branch -M main
+git remote add origin http://192.168.100.10:30030/admin/go-demo-app.git
+git push -u origin main
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;配置 Jenkins Pipeline&lt;/h2&gt;
+&lt;p&gt;在仓库根目录新建 &lt;code&gt;Jenkinsfile&lt;/code&gt;，用来自动构建镜像：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;pipeline {
+  agent {
+    kubernetes {
+      yaml &apos;&apos;&apos;
+      apiVersion: v1
+      kind: Pod
+      spec:
+        hostAliases:
+        - ip: &quot;192.168.100.14&quot;
+          hostnames:
+          - &quot;reg.westos.org&quot;
+        containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:debug
+          command:
+          - sleep
+          - infinity
+          volumeMounts:
+          - name: registry-creds
+            mountPath: /kaniko/.docker/
+        volumes:
+        - name: registry-creds
+          secret:
+            secretName: harbor-auth
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+      &apos;&apos;&apos;
+    }
+  }
+
+  environment {
+    IMAGE_REPO = &quot;reg.westos.org/library/go-demo-app&quot;
+    IMAGE_TAG = &quot;v1.0.${BUILD_NUMBER}&quot;
+  }
+
+  stages {
+    stage(&apos;Checkout&apos;) {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage(&apos;Build &amp;amp; Push&apos;) {
+      steps {
+        container(&apos;kaniko&apos;) {
+          sh &quot;&quot;&quot;
+            /kaniko/executor \
+            --context `pwd` \
+            --dockerfile `pwd`/Dockerfile \
+            --destination ${IMAGE_REPO}:${IMAGE_TAG} \
+            --destination ${IMAGE_REPO}:latest \
+            --skip-tls-verify \
+            --insecure
+          &quot;&quot;&quot;
+        }
+      }
+    }
+    
+    stage(&apos;Update Manifest&apos;) {
+        steps {
+            echo &quot;TODO: Update ArgoCD manifest with new tag ${IMAGE_TAG}&quot;
+        }
+    }
+  }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;在 Jenkins 新建一个 Pipeline 任务，选择 &quot;Pipeline from SCM&quot;，指向 Gitea 的 &lt;code&gt;go-demo-app&lt;/code&gt; 仓库，分支选 &lt;code&gt;main&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;跑一次构建，去 Harbor 看看镜像有没有生成。&lt;/p&gt;
+&lt;h2&gt;准备 K8s 部署文件&lt;/h2&gt;
+&lt;p&gt;在 &lt;code&gt;go-demo-app&lt;/code&gt; 仓库里新建 &lt;code&gt;deploy/deployment.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-demo-app
+  namespace: default
+  labels:
+    app: go-demo-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go-demo-app
+  template:
+    metadata:
+      labels:
+        app: go-demo-app
+      annotations:
+        prometheus.io/scrape: &quot;true&quot;
+        prometheus.io/port: &quot;8080&quot;
+        prometheus.io/path: &quot;/metrics&quot;
+    spec:
+      hostAliases:
+      - ip: &quot;192.168.100.14&quot;
+        hostnames:
+        - &quot;reg.westos.org&quot;
+      containers:
+      - name: go-demo-app
+        image: reg.westos.org/library/go-demo-app:latest 
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: &quot;500m&quot;
+            memory: &quot;128Mi&quot;
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      imagePullSecrets:
+      - name: harbor-auth
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-demo-app-svc
+  namespace: default
+  labels:
+    app: go-demo-app
+spec:
+  type: NodePort
+  selector:
+    app: go-demo-app
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    nodePort: 30095
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;推送到 Gitea，然后在 ArgoCD 创建新应用 &lt;code&gt;go-demo-app&lt;/code&gt;：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Repository URL: &lt;code&gt;http://192.168.100.10:30030/admin/go-demo-app.git&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Path: &lt;code&gt;deploy&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Sync Policy: Automatic，勾选 Prune 和 Self Heal&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;同步后访问 &lt;code&gt;http://192.168.100.10:30095&lt;/code&gt;，能看到页面就算成功了。&lt;/p&gt;
+&lt;h2&gt;实现 CI 闭环&lt;/h2&gt;
+&lt;p&gt;现在 Jenkins 每次构建出新镜像，还需要手动改 &lt;code&gt;deployment.yaml&lt;/code&gt; 里的版本号，这太蠢了。我们让 Jenkins 自己去改。&lt;/p&gt;
+&lt;h3&gt;修改 Jenkinsfile&lt;/h3&gt;
+&lt;p&gt;主要改动是加一个 &lt;code&gt;git-tools&lt;/code&gt; 容器，用来提交代码：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;pipeline {
+  agent {
+    kubernetes {
+      yaml &apos;&apos;&apos;
+      apiVersion: v1
+      kind: Pod
+      spec:
+        hostAliases:
+        - ip: &quot;192.168.100.14&quot;
+          hostnames:
+          - &quot;reg.westos.org&quot;
+        containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:debug
+          command:
+          - sleep
+          - infinity
+          volumeMounts:
+          - name: registry-creds
+            mountPath: /kaniko/.docker/
+        - name: git-tools
+          image: bitnami/git:latest
+          command:
+          - sleep
+          - infinity
+        volumes:
+        - name: registry-creds
+          secret:
+            secretName: harbor-auth
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+      &apos;&apos;&apos;
+    }
+  }
+
+  environment {
+    IMAGE_REPO = &quot;reg.westos.org/library/go-demo-app&quot;
+    IMAGE_TAG = &quot;v1.0.${BUILD_NUMBER}&quot;
+    GITEA_REPO = &quot;192.168.100.10:30030/admin/go-demo-app.git&quot;
+  }
+
+  stages {
+    stage(&apos;Checkout&apos;) {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage(&apos;Build &amp;amp; Push&apos;) {
+      steps {
+        container(&apos;kaniko&apos;) {
+          sh &quot;&quot;&quot;
+            /kaniko/executor \
+            --context `pwd` \
+            --dockerfile `pwd`/Dockerfile \
+            --destination ${IMAGE_REPO}:${IMAGE_TAG} \
+            --destination ${IMAGE_REPO}:latest \
+            --skip-tls-verify \
+            --insecure
+          &quot;&quot;&quot;
+        }
+      }
+    }
+    
+    stage(&apos;Update Manifest&apos;) {
+      steps {
+        container(&apos;git-tools&apos;) {
+          withCredentials([usernamePassword(credentialsId: &apos;gitea-auth&apos;, usernameVariable: &apos;GIT_USER&apos;, passwordVariable: &apos;GIT_PASS&apos;)]) {
+            sh &quot;&quot;&quot;
+              git config --global user.email &quot;jenkins@westos.org&quot;
+              git config --global user.name &quot;Jenkins CI&quot;
+              git config --global --add safe.directory &apos;*&apos;
+              
+              git checkout main
+              git pull origin main
+
+              sed -i &quot;s|image: ${IMAGE_REPO}:.*|image: ${IMAGE_REPO}:${IMAGE_TAG}|&quot; deploy/deployment.yaml
+              
+              echo &quot;Updated deployment.yaml:&quot;
+              grep &quot;image:&quot; deploy/deployment.yaml
+
+              if git status --porcelain | grep deploy/deployment.yaml; then
+                  git add deploy/deployment.yaml
+                  git commit -m &quot;Deploy: update image tag to ${IMAGE_TAG} [skip ci]&quot;
+                  git push http://${GIT_USER}:${GIT_PASS}@${GITEA_REPO} main
+              else
+                  echo &quot;No changes to commit&quot;
+              fi
+            &quot;&quot;&quot;
+          }
+        }
+      }
+    }
+  }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;推送更新后跑一次构建，去 Gitea 看看 &lt;code&gt;deployment.yaml&lt;/code&gt; 有没有自动更新版本号。如果有，去 ArgoCD 看 Pod 有没有重启。这样 CI 闭环就通了。&lt;/p&gt;
+&lt;h2&gt;接入代码扫描 (SonarQube)&lt;/h2&gt;
+&lt;p&gt;为了显得专业一点，加个代码扫描。&lt;/p&gt;
+&lt;h3&gt;安装 SonarQube&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;helm repo add sonarqube https://SonarSource.github.io/helm-chart-sonarqube
+helm repo update
+
+kubectl create namespace sonarqube
+
+cat &amp;lt;&amp;lt;EOF &amp;gt; sonar-values.yaml
+community:
+  enabled: true
+
+service:
+  type: NodePort
+  nodePort: 30099
+
+persistence:
+  enabled: true
+  storageClass: &quot;nfs-client&quot;
+  size: 5Gi
+
+elasticsearch:
+  configureNode: false
+
+monitoringPasscode: &quot;westos_monitor_123&quot;
+EOF
+
+helm install sonarqube sonarqube/sonarqube -n sonarqube -f sonar-values.yaml
+
+kubectl get pods -n sonarqube -w
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;SonarQube 启动比较慢，等个 2-3 分钟。&lt;/p&gt;
+&lt;h3&gt;配置 SonarQube&lt;/h3&gt;
+&lt;p&gt;访问 &lt;code&gt;http://192.168.100.10:30099&lt;/code&gt;，默认账号 &lt;code&gt;admin/admin&lt;/code&gt;，首次登录要改密码，我改成了 &lt;code&gt;Admin123456789!&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;创建项目：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Create a local project&lt;/li&gt;
+&lt;li&gt;Project display name: &lt;code&gt;go-demo-app&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Project Key: &lt;code&gt;go-demo-app&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Main branch name: &lt;code&gt;main&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;选 &quot;Follows the instance&apos;s default&quot;，点 Create&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;然后生成 Token，选 &quot;Locally&quot;，点 Generate，复制这个 Token（长这样：&lt;code&gt;sqp_xxxx...&lt;/code&gt;）。&lt;/p&gt;
+&lt;h3&gt;配置 Jenkins&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;安装插件：&lt;strong&gt;SonarQube Scanner&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;添加凭证：
+&lt;ul&gt;
+&lt;li&gt;Kind: Secret text&lt;/li&gt;
+&lt;li&gt;Secret: 粘贴刚才的 Token&lt;/li&gt;
+&lt;li&gt;ID: &lt;code&gt;sonar-token&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;配置系统：
+&lt;ul&gt;
+&lt;li&gt;Manage Jenkins → System → SonarQube servers&lt;/li&gt;
+&lt;li&gt;勾选 &quot;Environment variables&quot;&lt;/li&gt;
+&lt;li&gt;Name: &lt;code&gt;sonar-server&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Server URL: &lt;code&gt;http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Token: 选 &lt;code&gt;sonar-token&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3&gt;修改 Jenkinsfile&lt;/h3&gt;
+&lt;p&gt;在 Pod Template 里加一个 &lt;code&gt;sonar-cli&lt;/code&gt; 容器，然后在 Build 之前加一个 Code Analysis 阶段：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;// Pod Template 里加这个容器
+- name: sonar-cli
+  image: sonarsource/sonar-scanner-cli:latest
+  command:
+  - sleep
+  - infinity
+
+// stages 里加这个阶段
+stage(&apos;Code Analysis&apos;) {
+    steps {
+        container(&apos;sonar-cli&apos;) {
+            withSonarQubeEnv(&apos;sonar-server&apos;) {
+                sh &quot;&quot;&quot;
+                    sonar-scanner \
+                      -Dsonar.projectKey=go-demo-app \
+                      -Dsonar.sources=. \
+                      -Dsonar.host.url=http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000 \
+                      -Dsonar.login=$SONAR_AUTH_TOKEN
+                &quot;&quot;&quot;
+            }
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;跑一次构建，成功后去 SonarQube 网页看看有没有扫描报告。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&quot;https://dev-null-sec.github.io/images/posts/bc89b42fa4665e8f773dd677f5bedc8b.png&quot; alt=&quot;bc89b42fa4665e8f773dd677f5bedc8b&quot; /&gt;&lt;/p&gt;
+&lt;h2&gt;资源优化&lt;/h2&gt;
+&lt;p&gt;这时候我发现集群有点撑不住了，看了下节点资源：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+kubectl patch deployment metrics-server -n kube-system --type=&apos;json&apos; -p=&apos;[{&quot;op&quot;: &quot;add&quot;, &quot;path&quot;: &quot;/spec/template/spec/containers/0/args/-&quot;, &quot;value&quot;: &quot;--kubelet-insecure-tls&quot;}]&apos;
+
+kubectl top nodes
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;结果：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;NAME         CPU(cores)   CPU(%)   MEMORY(bytes)   MEMORY(%)
+k8s-master   134m         6%       1227Mi          74%
+k8s-node1    133m         6%       5524Mi          73%
+k8s-node2    59m          2%       856Mi           11%
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;node1 快累死了，node2 在偷懒。再看看 Pod：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl top pods -A --sort-by=memory
+&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code&gt;NAMESPACE     NAME                      CPU(cores)   MEMORY(bytes)
+sonarqube     sonarqube-sonarqube-0     19m          2186Mi
+jenkins       jenkins-0                 2m           1495Mi
+kube-system   kube-apiserver-k8s-master 31m          494Mi
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;问题很明显：资源分配不均，而且 SonarQube 和 Jenkins 太吃内存了。&lt;/p&gt;
+&lt;h3&gt;调整资源分配&lt;/h3&gt;
+&lt;p&gt;先把 node1 禁止调度，强制 SonarQube 和 Jenkins 重建到 node2：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl cordon k8s-node1
+
+kubectl delete pod sonarqube-sonarqube-0 -n sonarqube
+kubectl delete pod -n jenkins -l app.kubernetes.io/name=jenkins
+
+# 确认跑到 node2 了
+kubectl -n sonarqube get pod -o wide
+kubectl -n jenkins get pod -o wide
+
+# 解封
+kubectl uncordon k8s-node1
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;再看节点指标，平衡多了：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;NAME         CPU(cores)   CPU(%)   MEMORY(bytes)   MEMORY(%)
+k8s-master   130m         6%       1277Mi          77%
+k8s-node1    68m          3%       1440Mi          19%
+k8s-node2    145m         7%       883Mi           11%
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;限制内存占用&lt;/h3&gt;
+&lt;p&gt;修改 &lt;code&gt;sonar-values.yaml&lt;/code&gt;，加上资源限制：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;resources:
+  requests:
+    cpu: &quot;200m&quot;
+    memory: &quot;1Gi&quot;
+  limits:
+    cpu: &quot;1000m&quot;
+    memory: &quot;1800Mi&quot;
+
+jvmCeOpts: &quot;-Xmx1024m -Xms512m&quot;
+jvmOpts: &quot;-Xmx1024m -Xms512m&quot;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;更新：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;helm upgrade sonarqube sonarqube/sonarqube -n sonarqube -f sonar-values.yaml
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;修改 &lt;code&gt;jenkins-manual.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;controller:
+  javaOpts: &quot;-Xms512m -Xmx800m -Djenkins.install.runSetupWizard=false&quot;
+  
+  resources:
+    requests:
+      cpu: &quot;200m&quot;
+      memory: &quot;512Mi&quot;
+    limits:
+      cpu: &quot;1000m&quot;
+      memory: &quot;1280Mi&quot;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;更新：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;helm upgrade jenkins jenkins/jenkins -n jenkins -f jenkins-manual.yaml
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;再看内存占用：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;NAMESPACE     NAME                      CPU(cores)   MEMORY(bytes)
+sonarqube     sonarqube-sonarqube-0     913m         767Mi
+kube-system   kube-apiserver-k8s-master 53m          530Mi
+jenkins       jenkins-0                 945m         328Mi
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;优化效果很明显，虽然还是有点卡，但至少不会整个节点崩溃了。&lt;/p&gt;
+&lt;h2&gt;全链路监控&lt;/h2&gt;
+&lt;p&gt;接下来搞监控，用 Prometheus + Grafana + Loki。&lt;/p&gt;
+&lt;h3&gt;部署 kube-prometheus-stack&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;cat &amp;lt;&amp;lt;EOF &amp;gt; monitor-values.yaml
+grafana:
+  service:
+    type: NodePort
+    nodePort: 30000
+
+prometheus:
+  prometheusSpec:
+    retention: 5d
+    resources:
+      requests:
+        memory: 512Mi
+        cpu: 200m
+      limits:
+        memory: 1Gi
+        cpu: 1000m
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+
+alertmanager:
+  alertmanagerSpec:
+    replicas: 1
+
+kubeStateMetrics:
+  enabled: true
+nodeExporter:
+  enabled: true
+EOF
+
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+kubectl create ns monitoring
+
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  -n monitoring \
+  -f monitor-values.yaml
+
+kubectl get pods -n monitoring -w
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;监控 Jenkins&lt;/h3&gt;
+&lt;p&gt;在 Jenkins 安装插件 &lt;strong&gt;Prometheus metrics&lt;/strong&gt;，重启后访问 &lt;code&gt;http://192.168.100.10:30080/prometheus/&lt;/code&gt; 能看到指标就行。&lt;/p&gt;
+&lt;p&gt;创建 &lt;code&gt;jenkins-monitor.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jenkins
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: jenkins
+  namespaceSelector:
+    matchNames:
+      - jenkins
+  endpoints:
+  - port: http
+    path: /prometheus/
+    interval: 15s
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;应用：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl apply -f jenkins-monitor.yaml
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;访问 Grafana&lt;/h3&gt;
+&lt;p&gt;访问 &lt;code&gt;http://192.168.100.10:30000&lt;/code&gt;，账号 &lt;code&gt;admin&lt;/code&gt;，密码用命令查：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl -n monitoring get secret prometheus-grafana \
+  -o jsonpath=&quot;{.data.admin-password}&quot; | base64 -d ; echo
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;我的密码是：&lt;code&gt;sgbrApYRHjBKbJzdv7YbS1LgGZGqPAToqZ4x1NDj&lt;/code&gt;&lt;/p&gt;
+&lt;p&gt;进入 Grafana，左侧菜单 Dashboards → New → Import，输入 Dashboard ID &lt;code&gt;24357&lt;/code&gt;，数据源选 Prometheus，点 Import。&lt;/p&gt;
+&lt;p&gt;就能看到 Jenkins 的监控大盘了。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&quot;https://dev-null-sec.github.io/images/posts/41296523d2e7871e17230893838f035e.png&quot; alt=&quot;41296523d2e7871e17230893838f035e&quot; /&gt;&lt;/p&gt;
+&lt;p&gt;也可以导入 &lt;code&gt;16098&lt;/code&gt; 和 &lt;code&gt;13105&lt;/code&gt; 看主机和 K8s 集群的信息。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&quot;https://dev-null-sec.github.io/images/posts/632560302e3e4f84aeb5652c240c72e8.png&quot; alt=&quot;632560302e3e4f84aeb5652c240c72e8&quot; /&gt;&lt;/p&gt;
+&lt;p&gt;&lt;img src=&quot;https://dev-null-sec.github.io/images/posts/f37460f220035f8709ae67dd8e91c373.png&quot; alt=&quot;f37460f220035f8709ae67dd8e91c373&quot; /&gt;&lt;/p&gt;
+&lt;h3&gt;监控 Go 应用&lt;/h3&gt;
+&lt;p&gt;创建 &lt;code&gt;app-monitor.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: go-demo-app
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: go-demo-app
+  namespaceSelector:
+    matchNames:
+      - default
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 5s
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;应用：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl apply -f app-monitor.yaml
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;在 Grafana 的 Explore 里搜索 &lt;code&gt;go_goroutines&lt;/code&gt; 或 &lt;code&gt;process_cpu_seconds_total&lt;/code&gt;，能看到图表就说明成功了。&lt;/p&gt;
+&lt;h2&gt;日志聚合 (Loki)&lt;/h2&gt;
+&lt;p&gt;Grafana 已经装了，只需要装 Loki 和 Promtail。&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+kubectl create ns logging
+
+cat &amp;lt;&amp;lt;EOF &amp;gt; loki-values.yaml
+loki:
+  enabled: true
+
+  image:
+    repository: grafana/loki
+    tag: &quot;2.9.3&quot;  # 默认的 2.6 版本 Grafana 连不上
+    pullPolicy: IfNotPresent
+
+  config:
+    auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  storage:
+    type: filesystem
+
+  singleBinary:
+    replicas: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+promtail:
+  enabled: true
+  config:
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+EOF
+
+helm install loki grafana/loki-stack -n logging -f loki-values.yaml
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;配置 Grafana 数据源&lt;/h3&gt;
+&lt;p&gt;进入 Grafana → Connections → Data Sources → Add data source → 选择 Loki。&lt;/p&gt;
+&lt;p&gt;URL 填：&lt;code&gt;http://loki.logging.svc.cluster.local:3100&lt;/code&gt;&lt;/p&gt;
+&lt;p&gt;点 Save &amp;amp; Test。&lt;/p&gt;
+&lt;h3&gt;验证日志&lt;/h3&gt;
+&lt;p&gt;进入 Grafana → Explore → 数据源选 Loki。&lt;/p&gt;
+&lt;p&gt;Label filters 选 &lt;code&gt;namespace = jenkins&lt;/code&gt; 或 &lt;code&gt;default&lt;/code&gt;，点 Run query。&lt;/p&gt;
+&lt;p&gt;现在不仅能看到 CPU 曲线，还能在同一个页面看到 Pod 的日志，全链路可视化就实现了。&lt;/p&gt;
+&lt;h2&gt;Argo Rollouts 灰度发布&lt;/h2&gt;
+&lt;p&gt;最后搞个灰度发布，实现无人值守自动上线。&lt;/p&gt;
+&lt;h3&gt;安装 Argo Rollouts&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;kubectl create namespace argo-rollouts
+
+kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+
+# 安装 kubectl 插件
+curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+chmod +x ./kubectl-argo-rollouts-linux-amd64
+mv ./kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
+
+kubectl get pods -n argo-rollouts
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;创建 AnalysisTemplate&lt;/h3&gt;
+&lt;p&gt;在 &lt;code&gt;go-demo-app&lt;/code&gt; 仓库的 &lt;code&gt;deploy&lt;/code&gt; 目录下，新建 &lt;code&gt;analysis.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate-check
+  namespace: default
+spec:
+  args:
+  - name: service-name
+  metrics:
+  - name: success-rate
+    successCondition: result[0] == 1
+    provider:
+      prometheus:
+        address: http://prometheus-kube-prometheus-prometheus.monitoring:9090
+        query: |
+          # 演示用的查询，永远返回 1
+          # 生产环境应该改成真实的成功率查询
+          vector(1)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;将 Deployment 升级为 Rollout&lt;/h3&gt;
+&lt;p&gt;修改 &lt;code&gt;deploy/deployment.yaml&lt;/code&gt;，主要改动：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;apiVersion&lt;/code&gt; 改为 &lt;code&gt;argoproj.io/v1alpha1&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;kind&lt;/code&gt; 改为 &lt;code&gt;Rollout&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;replicas&lt;/code&gt; 改为 &lt;code&gt;5&lt;/code&gt;（方便看灰度效果）&lt;/li&gt;
+&lt;li&gt;加上 &lt;code&gt;strategy.canary&lt;/code&gt; 配置&lt;/li&gt;
+&lt;/ul&gt;
+&lt;pre&gt;&lt;code&gt;apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: go-demo-app
+  namespace: default
+  labels:
+    app: go-demo-app
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: go-demo-app
+  strategy:
+    canary:
+      steps:
+      - setWeight: 20  # 先切 20% 流量
+      - analysis:
+          templates:
+          - templateName: success-rate-check
+          args:
+          - name: service-name
+            value: go-demo-app
+      - pause: {duration: 30s}  # 人工观察 30 秒
+      - setWeight: 50  # 再切 50% 流量
+      - pause: {duration: 10s}
+      - setWeight: 100  # 最后全量上线
+  template:
+    metadata:
+      labels:
+        app: go-demo-app
+      annotations:
+        prometheus.io/scrape: &quot;true&quot;
+        prometheus.io/port: &quot;8080&quot;
+        prometheus.io/path: &quot;/metrics&quot;
+    spec:
+      hostAliases:
+      - ip: &quot;192.168.100.14&quot;
+        hostnames:
+        - &quot;reg.westos.org&quot;
+      containers:
+      - name: go-demo-app
+        image: reg.westos.org/library/go-demo-app:latest 
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: &quot;200m&quot;
+            memory: &quot;128Mi&quot;
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      imagePullSecrets:
+      - name: harbor-auth
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-demo-app-svc
+  namespace: default
+  labels:
+    app: go-demo-app
+spec:
+  type: NodePort
+  selector:
+    app: go-demo-app
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    nodePort: 30095
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;删除旧的 Deployment：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl delete deployment go-demo-app
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;推送到 Gitea，去 ArgoCD 点 Sync。&lt;/p&gt;
+&lt;h3&gt;模拟灰度发布&lt;/h3&gt;
+&lt;p&gt;开一个终端窗口，实时监控 Rollout 状态：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl argo rollouts get rollout go-demo-app -n default -w
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;然后去 Jenkins 跑一次构建。&lt;/p&gt;
+&lt;p&gt;观察过程：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Step 1&lt;/strong&gt;: 状态变为 Paused，新版本 Pod 启动 1 个（20%），旧版本 4 个&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Analysis&lt;/strong&gt;: 后台跑 AnalysisRun，连 Prometheus 查询 &lt;code&gt;vector(1)&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pass&lt;/strong&gt;: 如果 Prometheus 连接正常，Analysis 显示 Successful&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Step 2&lt;/strong&gt;: 权重自动增加到 50%&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Complete&lt;/strong&gt;: 最终权重变成 100%，旧版本 Pod 全部消失&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;img src=&quot;https://dev-null-sec.github.io/images/posts/163492a4e552faed921a6f7c10858de8-1766296444543-9.png&quot; alt=&quot;163492a4e552faed921a6f7c10858de8&quot; /&gt;&lt;/p&gt;
+&lt;p&gt;全部切为新版本&lt;/p&gt;
+&lt;p&gt;&lt;img src=&quot;https://dev-null-sec.github.io/images/posts/82815ed2de155af98b23e71eff469d7a.png&quot; alt=&quot;82815ed2de155af98b23e71eff469d7a&quot; /&gt;&lt;/p&gt;
+&lt;p&gt;整个过程完全自动化，无需人工介入。这就是 GitOps + 灰度发布的魅力。&lt;/p&gt;
+&lt;h2&gt;小结&lt;/h2&gt;
+&lt;p&gt;折腾了这么多天，从基础的 CI/CD 到代码扫描、全链路监控、灰度发布，整个云原生工具链算是体验了一遍。虽然中途遇到不少资源不足、配置错误的问题，但每次解决问题都能学到新东西。&lt;/p&gt;
+&lt;p&gt;最大的感受就是：&lt;strong&gt;云原生不是银弹，但确实能解决很多传统部署方式解决不了的问题&lt;/strong&gt;。比如灰度发布，以前要写一堆脚本，现在一个 YAML 就搞定了。&lt;/p&gt;
+</content:encoded></item><item><title>从零搭建 K8s CI/CD 流水线实战记录</title><link>https://dev-null-sec.github.io/posts/%E4%BB%8E%E9%9B%B6%E6%90%AD%E5%BB%BA-k8s-cicd-%E6%B5%81%E6%B0%B4%E7%BA%BF%E5%AE%9E%E6%88%98%E8%AE%B0%E5%BD%95/</link><guid isPermaLink="true">https://dev-null-sec.github.io/posts/%E4%BB%8E%E9%9B%B6%E6%90%AD%E5%BB%BA-k8s-cicd-%E6%B5%81%E6%B0%B4%E7%BA%BF%E5%AE%9E%E6%88%98%E8%AE%B0%E5%BD%95/</guid><description>基于 Kubernetes 搭建完整 CI/CD 流水线实战，涵盖 Jenkins、Gitea、ArgoCD、Harbor 的部署与集成，实现 GitOps 自动化发布</description><pubDate>Wed, 14 May 2025 00:00:00 GMT</pubDate><content:encoded>&lt;p&gt;最近在学云原生，想着光看文档不行，得动手搭个真实的 CI/CD 流水线才算入门。折腾了差不多一周，终于把整套流程跑通了。&lt;/p&gt;
+&lt;h2&gt;我的实验环境&lt;/h2&gt;
+&lt;p&gt;手上有 4 台虚拟机：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;主机名&lt;/th&gt;
+&lt;th&gt;IP&lt;/th&gt;
+&lt;th&gt;用途&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;k8s-master&lt;/td&gt;
+&lt;td&gt;192.168.100.10&lt;/td&gt;
+&lt;td&gt;K8s 主节点&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;k8s-node1&lt;/td&gt;
+&lt;td&gt;192.168.100.11&lt;/td&gt;
+&lt;td&gt;Work 节点&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;k8s-node2&lt;/td&gt;
+&lt;td&gt;192.168.100.12&lt;/td&gt;
+&lt;td&gt;Work 节点&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;harbor&lt;/td&gt;
+&lt;td&gt;192.168.100.14&lt;/td&gt;
+&lt;td&gt;私有镜像仓库&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;K8s 集群之前就搭好了，这次主要记录怎么在上面跑 Jenkins、Gitea、ArgoCD 这些东西。&lt;/p&gt;
+&lt;h2&gt;先解决存储问题&lt;/h2&gt;
+&lt;p&gt;一开始我直接装 Jenkins，结果重启 Pod 后所有配置都没了。才意识到得先搞个持久化存储，不然数据全在内存里，重启就完蛋。&lt;/p&gt;
+&lt;h3&gt;在 Harbor 节点上安装 NFS 服务端&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;yum install -y nfs-utils rpcbind
+systemctl enable rpcbind nfs-server
+systemctl start rpcbind nfs-server
+
+mkdir -p /data/nfs-share
+chmod 777 /data/nfs-share  # 简单粗暴给权限，防止 K8s 挂载时 Permission Denied
+
+cat &amp;lt;&amp;lt;EOF &amp;gt;&amp;gt; /etc/exports
+/data/nfs-share 192.168.100.0/24(rw,sync,no_root_squash,no_all_squash)
+EOF
+
+exportfs -r
+showmount -e localhost  # 检查是否生效
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;在 K8s 节点上装客户端&lt;/h3&gt;
+&lt;p&gt;每个 Node 都得装 NFS 客户端，不然挂载不上：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;yum install -y nfs-utils
+
+# 测试一下能不能正常挂载
+mkdir -p /tmp/test-mount
+mount -t nfs 192.168.100.14:/data/nfs-share /tmp/test-mount
+touch /tmp/test-mount/hello.txt
+umount /tmp/test-mount
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;能创建文件就说明通了。&lt;/p&gt;
+&lt;h3&gt;让 K8s 自动创建 PV&lt;/h3&gt;
+&lt;p&gt;手动创建 PV 太麻烦了，装个 NFS Provisioner 让它自动搞：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;# 先装 Helm
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# 添加仓库
+helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
+
+# 安装 NFS Provisioner
+helm install nfs-client nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
+  --set nfs.server=192.168.100.14 \
+  --set nfs.path=/data/nfs-share \
+  --set storageClass.name=nfs-client \
+  --set storageClass.defaultClass=true \
+  --namespace kube-system
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;装好后看看有没有 StorageClass：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl get sc
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;有 &lt;code&gt;nfs-client (default)&lt;/code&gt; 就对了。&lt;/p&gt;
+&lt;p&gt;试试能不能自动分配存储：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;cat &amp;lt;&amp;lt;EOF &amp;gt; test-pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: test-claim
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Mi
+EOF
+
+kubectl apply -f test-pvc.yaml
+kubectl get pvc
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;STATUS 变成 &lt;code&gt;Bound&lt;/code&gt; 就说明能用了。&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl delete -f test-pvc.yaml  # 测试完删掉
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;开始装 Jenkins&lt;/h2&gt;
+&lt;p&gt;Jenkins 是流水线的大脑，这东西配置项特别多，用 Helm 装省事。&lt;/p&gt;
+&lt;h3&gt;写配置文件&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;cat &amp;lt;&amp;lt;EOF &amp;gt; jenkins-manual.yaml
+controller:
+  image:
+    repository: &quot;jenkins/jenkins&quot;
+    tag: &quot;lts-jdk17&quot;
+    pullPolicy: &quot;IfNotPresent&quot;
+  
+  # 资源给足一点，不然跑起来会卡
+  resources:
+    requests:
+      cpu: &quot;500m&quot;
+      memory: &quot;1024Mi&quot;
+    limits:
+      cpu: &quot;1500m&quot;
+      memory: &quot;2560Mi&quot;
+
+  # 管理员账号
+  admin:
+    createSecret: true
+    username: &quot;admin&quot;
+    password: &quot;admin123&quot;
+
+  # NodePort 暴露服务
+  serviceType: NodePort
+  servicePort: 8080
+  nodePort: 30080
+
+  # 持久化存储
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: &quot;nfs-client&quot; 
+    accessMode: ReadWriteOnce
+
+  # 先不装插件，启动后再手动装
+  installPlugins: []
+
+  # 跳过初始向导
+  javaOpts: &quot;-Xms1024m -Xmx2048m -Djenkins.install.runSetupWizard=false&quot;
+
+serviceAccount:
+  create: true
+  name: jenkins
+rbac:
+  create: true
+  readSecrets: true
+EOF
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;开始装&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;kubectl create namespace jenkins
+
+helm repo add jenkins https://charts.jenkins.io
+helm repo update
+
+helm install jenkins jenkins/jenkins -n jenkins -f jenkins-manual.yaml
+
+# 等 Pod Running
+kubectl get pods -n jenkins -w
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;第一个坑：Service 配置&lt;/h3&gt;
+&lt;p&gt;一开始我参考网上找的配置文件，Service 部分是这么写的：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;service:
+  type: NodePort
+  nodePort: 30080
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;结果装完发现 Service 是 ClusterIP，根本没暴露端口，外面访问不了。&lt;/p&gt;
+&lt;p&gt;翻了下官方文档才知道，新版本改了配置结构：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;serviceType: NodePort
+servicePort: 8080
+nodePort: 30080
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;改完配置重新部署：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;helm upgrade jenkins jenkins/jenkins -n jenkins -f jenkins-manual.yaml
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;然后浏览器访问 &lt;code&gt;http://192.168.100.10:30080&lt;/code&gt;，账号 &lt;code&gt;admin/admin123&lt;/code&gt;。&lt;/p&gt;
+&lt;h3&gt;装插件&lt;/h3&gt;
+&lt;p&gt;进去后第一件事就是装插件：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Kubernetes&lt;/strong&gt; - 让 Jenkins 能在 K8s 里动态生成 Agent&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Pipeline&lt;/strong&gt; - 构建流水线必须的&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Git&lt;/strong&gt; - 拉取代码&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Blue Ocean&lt;/strong&gt; - 好看的流水线 UI（可选）&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Localization: Chinese (Simplified)&lt;/strong&gt; - 简体中文包（可选）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;小坑&lt;/strong&gt;：官方源下载巨慢，好几个插件报错装不上。后来换了清华源才搞定：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;https://mirrors.tuna.tsinghua.edu.cn/jenkins/updates/update-center.json
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;换完源重启 Jenkins 就好了。&lt;/p&gt;
+&lt;h3&gt;让 Jenkins 跑在 K8s 上&lt;/h3&gt;
+&lt;p&gt;这是关键配置，让 Jenkins 能在 K8s 里动态起 Pod 来构建：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;进入 &lt;strong&gt;Manage Jenkins&lt;/strong&gt; → &lt;strong&gt;Clouds&lt;/strong&gt; → &lt;strong&gt;New Cloud&lt;/strong&gt;&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;选择 &lt;strong&gt;Kubernetes&lt;/strong&gt;，输入名称 &lt;code&gt;kubernetes&lt;/code&gt;，点击 Create&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;填入以下配置：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Kubernetes URL&lt;/strong&gt;: &lt;code&gt;https://kubernetes.default&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Kubernetes Namespace&lt;/strong&gt;: &lt;code&gt;jenkins&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Credentials&lt;/strong&gt;: 选择 None（因为我们开启了 RBAC，会自动用 ServiceAccount 认证）&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Jenkins URL&lt;/strong&gt;: &lt;code&gt;http://jenkins.jenkins.svc.cluster.local:8080&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Jenkins tunnel&lt;/strong&gt;: &lt;code&gt;jenkins.jenkins.svc.cluster.local:50000&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;点 &lt;strong&gt;Test Connection&lt;/strong&gt;，看到 &lt;code&gt;Connected to Kubernetes v1.xx&lt;/code&gt; 就成了&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3&gt;测试一下&lt;/h3&gt;
+&lt;p&gt;写个简单的 Pipeline 试试能不能在 K8s 里跑：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;pipeline {
+  agent {
+    kubernetes {
+      yaml &apos;&apos;&apos;
+      apiVersion: v1
+      kind: Pod
+      spec:
+        containers:
+        - name: shell
+          image: busybox
+          command: [&apos;sleep&apos;, &apos;infinity&apos;]
+      &apos;&apos;&apos;
+    }
+  }
+  stages {
+    stage(&apos;Test&apos;) {
+      steps {
+        container(&apos;shell&apos;) {
+          sh &apos;echo &quot;Success!&quot;&apos;
+        }
+      }
+    }
+  }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;跑通了就说明 Jenkins 能在 K8s 里动态创建 Pod 了。&lt;/p&gt;
+&lt;h2&gt;装个 Git 仓库&lt;/h2&gt;
+&lt;p&gt;Gitea 比 GitLab 轻量多了，我这小集群跑 GitLab 估计直接挂。&lt;/p&gt;
+&lt;h3&gt;配置文件&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;cat &amp;lt;&amp;lt;EOF &amp;gt; gitea-lite.yaml
+global:
+  storageClass: &quot;nfs-client&quot;
+
+# 禁用各种复杂的外部依赖
+redis:
+  enabled: false
+redis-cluster:
+  enabled: false
+valkey:
+  enabled: false
+valkey-cluster:
+  enabled: false
+postgresql:
+  enabled: false
+postgresql-ha:
+  enabled: false
+
+# Gitea 核心配置
+gitea:
+  # 使用内置 SQLite3 数据库
+  config:
+    database:
+      DB_TYPE: sqlite3
+    server:
+      DOMAIN: &quot;gitea.local&quot; 
+      ROOT_URL: &quot;http://192.168.100.10:30030/&quot;
+      SSH_DOMAIN: &quot;192.168.100.10&quot;
+      SSH_PORT: &quot;30022&quot;
+      
+  # 管理员账号
+  admin:
+    username: &quot;admin&quot;
+    password: &quot;admin123&quot;
+    email: &quot;admin@example.com&quot;
+
+# 网络暴露
+service:
+  http:
+    type: NodePort
+    port: 3000
+    nodePort: 30030
+  ssh:
+    type: NodePort
+    port: 22
+    nodePort: 30022
+
+# 持久化存储
+persistence:
+  enabled: true
+  size: 5Gi
+  accessModes:
+    - ReadWriteOnce
+EOF
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;第二个大坑&lt;/h3&gt;
+&lt;p&gt;一开始我没注意配置文件，直接 &lt;code&gt;helm install&lt;/code&gt;，结果它给我拉了一堆 Redis Cluster、PostgreSQL HA 什么的，十几个 Pod 瞬间把集群撑爆了。&lt;/p&gt;
+&lt;p&gt;赶紧把那些缓存和高可用组件全禁用掉，只留一个 Gitea Pod，世界清净了。&lt;/p&gt;
+&lt;h3&gt;开始装&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;helm repo add gitea-charts https://dl.gitea.com/charts/
+helm repo update
+
+kubectl create ns gitea
+helm install gitea gitea-charts/gitea -n gitea -f gitea-lite.yaml
+
+kubectl get pods -n gitea -w
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;访问 &lt;code&gt;http://192.168.100.10:30030&lt;/code&gt;，第一次要点&quot;安装&quot;，数据库选 SQLite3（最简单），其他不用改，直接装。&lt;/p&gt;
+&lt;p&gt;装完用 &lt;code&gt;admin/admin123&lt;/code&gt; 登录，建个测试仓库 &lt;code&gt;demo-app&lt;/code&gt;。&lt;/p&gt;
+&lt;h2&gt;Harbor 准备工作&lt;/h2&gt;
+&lt;p&gt;Harbor 我之前就搭好了，在 &lt;code&gt;192.168.100.14&lt;/code&gt; 上，域名 &lt;code&gt;reg.westos.org&lt;/code&gt;，账号 &lt;code&gt;admin/12345&lt;/code&gt;。&lt;/p&gt;
+&lt;h3&gt;让 Jenkins 能推镜像&lt;/h3&gt;
+&lt;p&gt;Jenkins 要往 Harbor 推镜像，得先给它个凭证：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl create secret docker-registry harbor-auth \
+  --docker-server=reg.westos.org \
+  --docker-username=admin \
+  --docker-password=12345 \
+  --docker-email=admin@westos.org \
+  -n jenkins
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;提前推个基础镜像&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;docker pull nginx:latest
+docker login reg.westos.org -u admin -p 12345
+docker tag nginx:latest reg.westos.org/library/nginx:v1
+docker push reg.westos.org/library/nginx:v1
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;写个简单的 Dockerfile&lt;/h3&gt;
+&lt;p&gt;在 &lt;code&gt;demo-app&lt;/code&gt; 仓库根目录建个 Dockerfile：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;FROM reg.westos.org/library/nginx:v1
+RUN echo &quot;Hello from Westos Harbor - v1&quot; &amp;gt; /usr/share/nginx/html/index.html
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;strong&gt;又踩坑了&lt;/strong&gt;：最开始我用 Alpine + &lt;code&gt;cat&lt;/code&gt; 输出内容，结果容器一跑就 CrashLoopBackOff。后来才想明白，&lt;code&gt;cat&lt;/code&gt; 执行完进程就退了，容器当然挂。换成 Nginx 才正常。&lt;/p&gt;
+&lt;h3&gt;让 Jenkins 能拉代码&lt;/h3&gt;
+&lt;p&gt;Gitea 仓库是私有的，得给 Jenkins 配个凭证：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;进入 &lt;strong&gt;Manage Jenkins&lt;/strong&gt; → &lt;strong&gt;Credentials&lt;/strong&gt; → &lt;strong&gt;System&lt;/strong&gt; → &lt;strong&gt;Global credentials&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;点击 &lt;strong&gt;Add Credentials&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Kind&lt;/strong&gt;: Username with password&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Username&lt;/strong&gt;: &lt;code&gt;admin&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Password&lt;/strong&gt;: &lt;code&gt;admin123&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;ID&lt;/strong&gt;: &lt;code&gt;gitea-auth&lt;/code&gt;（记住这个 ID，流水线要用）&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Description&lt;/strong&gt;: Gitea Admin&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2&gt;写第一条流水线&lt;/h2&gt;
+&lt;p&gt;终于到关键环节了，写个 Pipeline 让 Jenkins 自动构建镜像。&lt;/p&gt;
+&lt;p&gt;在 Jenkins 创建一个新的流水线任务，粘贴以下代码：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;pipeline {
+  agent {
+    kubernetes {
+      yaml &apos;&apos;&apos;
+      apiVersion: v1
+      kind: Pod
+      spec:
+        # 让 Pod 知道域名的 IP
+        hostAliases:
+        - ip: &quot;192.168.100.14&quot;
+          hostnames:
+          - &quot;reg.westos.org&quot;
+        
+        containers:
+        - name: kaniko
+          # 使用 debug 版本，包含 shell 方便调试
+          image: gcr.io/kaniko-project/executor:debug
+          command:
+          - sleep
+          - infinity
+          volumeMounts:
+          - name: registry-creds
+            mountPath: /kaniko/.docker/
+        
+        volumes:
+        - name: registry-creds
+          secret:
+            secretName: harbor-auth
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+      &apos;&apos;&apos;
+    }
+  }
+
+  stages {
+    stage(&apos;Checkout Code&apos;) {
+      steps {
+        git credentialsId: &apos;gitea-auth&apos;, 
+            url: &apos;http://192.168.100.10:30030/admin/demo-app.git&apos;,
+            branch: &apos;main&apos;
+      }
+    }
+
+    stage(&apos;Build &amp;amp; Push&apos;) {
+      steps {
+        container(&apos;kaniko&apos;) {
+          sh &apos;&apos;&apos;
+            /kaniko/executor \
+            --context `pwd` \
+            --dockerfile `pwd`/Dockerfile \
+            --destination reg.westos.org/library/demo-app:v1 \
+            --skip-tls-verify \
+            --insecure
+          &apos;&apos;&apos;
+        }
+      }
+    }
+  }
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;点&quot;立即构建&quot;，然后就看着 Jenkins 自己跑：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;在 K8s 里起个 Kaniko Pod&lt;/li&gt;
+&lt;li&gt;从 Gitea 拉代码&lt;/li&gt;
+&lt;li&gt;构建镜像&lt;/li&gt;
+&lt;li&gt;推到 Harbor&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;成功后去 Harbor 看看，&lt;code&gt;library/demo-app:v1&lt;/code&gt; 应该就在那了。&lt;/p&gt;
+&lt;h2&gt;装 ArgoCD 实现 GitOps&lt;/h2&gt;
+&lt;p&gt;ArgoCD 是 GitOps 的灵魂，它会盯着 Git 仓库，一有变化就自动同步到 K8s。&lt;/p&gt;
+&lt;h3&gt;装上去&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# 暴露服务
+kubectl patch svc argocd-server -n argocd -p &apos;{&quot;spec&quot;: {&quot;type&quot;: &quot;NodePort&quot;, &quot;ports&quot;: [{&quot;port&quot;: 443, &quot;targetPort&quot;: 8080, &quot;nodePort&quot;: 30090}]}}&apos;
+
+# 获取初始密码
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=&quot;{.data.password}&quot; | base64 -d; echo
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;浏览器访问 &lt;code&gt;https://192.168.100.10:30090&lt;/code&gt;（会报不安全，无视它继续就行），用 &lt;code&gt;admin&lt;/code&gt; 和刚才的密码登录。&lt;/p&gt;
+&lt;h3&gt;准备部署配置&lt;/h3&gt;
+&lt;p&gt;在 Gitea 的 &lt;code&gt;demo-app&lt;/code&gt; 仓库里建个 &lt;code&gt;deploy&lt;/code&gt; 文件夹，写个 &lt;code&gt;deployment.yaml&lt;/code&gt;：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-app
+  template:
+    metadata:
+      labels:
+        app: demo-app
+    spec:
+      # 让 K8s 节点知道怎么解析 reg.westos.org
+      hostAliases:
+      - ip: &quot;192.168.100.14&quot;
+        hostnames:
+        - &quot;reg.westos.org&quot;
+        
+      containers:
+      - name: demo-app
+        image: reg.westos.org/library/demo-app:v1
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+      
+      # 拉取私有镜像的凭证
+      imagePullSecrets:
+      - name: harbor-auth
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-svc
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: demo-app
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30088
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;strong&gt;注意&lt;/strong&gt;：要部署到 &lt;code&gt;default&lt;/code&gt; 命名空间，那里也得有 Harbor 凭证：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl create secret docker-registry harbor-auth \
+  --docker-server=reg.westos.org \
+  --docker-username=admin \
+  --docker-password=12345 \
+  --docker-email=admin@westos.org \
+  -n default
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;我就是忘了这茬，Pod 一直 &lt;code&gt;ImagePullBackOff&lt;/code&gt;，查了半天才反应过来。&lt;/p&gt;
+&lt;h3&gt;在 ArgoCD 里配置应用&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;登录 ArgoCD UI&lt;/li&gt;
+&lt;li&gt;点击左上角 &lt;strong&gt;+ NEW APP&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;填入以下配置：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Application Name&lt;/strong&gt;: &lt;code&gt;demo-app&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Project Name&lt;/strong&gt;: &lt;code&gt;default&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Sync Policy&lt;/strong&gt;: &lt;code&gt;Automatic&lt;/code&gt;（自动同步）
+&lt;ul&gt;
+&lt;li&gt;勾选 &lt;strong&gt;Prune Resources&lt;/strong&gt;（Git 删了文件，K8s 也跟着删）&lt;/li&gt;
+&lt;li&gt;勾选 &lt;strong&gt;Self Heal&lt;/strong&gt;（手动改 K8s 会被自动还原）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Repository URL&lt;/strong&gt;: &lt;code&gt;http://192.168.100.10:30030/admin/demo-app.git&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Revision&lt;/strong&gt;: &lt;code&gt;main&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Path&lt;/strong&gt;: &lt;code&gt;deploy&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Cluster URL&lt;/strong&gt;: &lt;code&gt;https://kubernetes.default.svc&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Namespace&lt;/strong&gt;: &lt;code&gt;default&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;点击 &lt;strong&gt;CREATE&lt;/strong&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;创建后，ArgoCD 自己会从 Gitea 拉 YAML 文件部署到 K8s。等一会状态变成 &lt;code&gt;Healthy&lt;/code&gt; 和 &lt;code&gt;Synced&lt;/code&gt; 就好了。&lt;/p&gt;
+&lt;h2&gt;完整跑一遍&lt;/h2&gt;
+&lt;p&gt;现在 CI/CD 已经通了，测试下完整流程。&lt;/p&gt;
+&lt;h3&gt;CI 部分&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;修改 Gitea 中的 &lt;code&gt;Dockerfile&lt;/code&gt;，把 &lt;code&gt;v1&lt;/code&gt; 改成 &lt;code&gt;v2&lt;/code&gt;：&lt;/li&gt;
+&lt;/ol&gt;
+&lt;pre&gt;&lt;code&gt;FROM reg.westos.org/library/nginx:v1
+RUN echo &quot;Hello from Westos Harbor - v2&quot; &amp;gt; /usr/share/nginx/html/index.html
+&lt;/code&gt;&lt;/pre&gt;
+&lt;ol&gt;
+&lt;li&gt;在 Jenkins 手动触发构建（或者配置 Webhook 自动触发）&lt;/li&gt;
+&lt;li&gt;修改 Pipeline 中的镜像 tag，把 &lt;code&gt;destination&lt;/code&gt; 改成 &lt;code&gt;demo-app:v2&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;构建成功后，Harbor 里会出现 &lt;code&gt;v2&lt;/code&gt; 标签的镜像&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3&gt;CD 部分&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;在 Gitea 中进入 &lt;code&gt;deploy&lt;/code&gt; 目录，编辑 &lt;code&gt;deployment.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;把镜像 tag 从 &lt;code&gt;v1&lt;/code&gt; 改成 &lt;code&gt;v2&lt;/code&gt;：&lt;/li&gt;
+&lt;/ol&gt;
+&lt;pre&gt;&lt;code&gt;image: reg.westos.org/library/demo-app:v2
+&lt;/code&gt;&lt;/pre&gt;
+&lt;ol&gt;
+&lt;li&gt;提交更改&lt;/li&gt;
+&lt;li&gt;去 ArgoCD 界面，点击 &lt;code&gt;demo-app&lt;/code&gt; 应用的 &lt;strong&gt;Refresh&lt;/strong&gt; 按钮（如果配置了自动同步，等几十秒它自己会检测到变化）&lt;/li&gt;
+&lt;li&gt;ArgoCD 会发现新版本镜像，触发滚动更新&lt;/li&gt;
+&lt;li&gt;旧的 Pod 会被 Terminating，新的 Pod 会启动&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;img src=&quot;https://dev-null-sec.github.io/images/posts/29295ce94ad216d1f32b362fc79edb74.png&quot; alt=&quot;29295ce94ad216d1f32b362fc79edb74&quot; /&gt;&lt;/p&gt;
+&lt;h3&gt;验证&lt;/h3&gt;
+&lt;p&gt;浏览器打开 &lt;code&gt;http://192.168.100.10:30088&lt;/code&gt;，看到 &quot;Hello from Westos Harbor - v2&quot; 就说明整条链路通了！&lt;/p&gt;
+&lt;h2&gt;折腾完的一些感受&lt;/h2&gt;
+&lt;p&gt;搞了这么久，总算把 CI/CD 这套东西跑通了。几个体会：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;存储别省&lt;/strong&gt; - 一开始嫌 NFS 麻烦，后来发现不搞持久化根本没法玩&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;资源给足&lt;/strong&gt; - Jenkins 挺吃资源的，配少了会卡死&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;GitOps 确实爽&lt;/strong&gt; - 改个 YAML 推上去，自动就部署了，再也不用 SSH 上去手动重启容器&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;踩坑是常态&lt;/strong&gt; - Service 配置、凭证命名空间、容器生命周期，每个都踩了一遍&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;如果你也在折腾这些东西，有问题欢迎交流。反正我这一路踩的坑够多了，说不定能帮上忙。&lt;/p&gt;
+</content:encoded></item><item><title>搭建 Kubernetes 集群</title><link>https://dev-null-sec.github.io/posts/%E6%90%AD%E5%BB%BAk8s%E9%9B%86%E7%BE%A4/</link><guid isPermaLink="true">https://dev-null-sec.github.io/posts/%E6%90%AD%E5%BB%BAk8s%E9%9B%86%E7%BE%A4/</guid><description>记录用 kubeadm 搭建 k8s 集群的过程，使用 containerd 运行时和 Calico 网络</description><pubDate>Sat, 08 Mar 2025 00:00:00 GMT</pubDate><content:encoded>&lt;p&gt;最近需要搭个 k8s 集群做测试，用的是 kubeadm 部署方式。集群镜像从私有 Harbor 仓库拉取，Harbor 的搭建可以参考&lt;a href=&quot;../%E6%90%AD%E5%BB%BAharbor%E7%A7%81%E6%9C%89%E9%95%9C%E5%83%8F%E4%BB%93%E5%BA%93/&quot;&gt;上一篇文章&lt;/a&gt;。&lt;/p&gt;
+&lt;h2&gt;环境规划&lt;/h2&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;主机&lt;/th&gt;
+&lt;th&gt;IP&lt;/th&gt;
+&lt;th&gt;用途&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;k8s-master&lt;/td&gt;
+&lt;td&gt;192.168.100.20&lt;/td&gt;
+&lt;td&gt;控制平面节点&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;k8s-node1&lt;/td&gt;
+&lt;td&gt;192.168.100.21&lt;/td&gt;
+&lt;td&gt;工作节点&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;k8s-node2&lt;/td&gt;
+&lt;td&gt;192.168.100.22&lt;/td&gt;
+&lt;td&gt;工作节点&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;harbor&lt;/td&gt;
+&lt;td&gt;192.168.100.14&lt;/td&gt;
+&lt;td&gt;私有镜像仓库&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;k8s 版本：v1.33.5&lt;br /&gt;
+网络插件：Calico v3.31.0&lt;br /&gt;
+容器运行时：containerd&lt;/p&gt;
+&lt;h2&gt;系统初始化&lt;/h2&gt;
+&lt;p&gt;所有节点都需要执行以下操作。&lt;/p&gt;
+&lt;h3&gt;关闭 swap&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;swapoff -a
+sed -i &apos;/swap/s/^/#/&apos; /etc/fstab
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;调整内核参数&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;cat &amp;lt;&amp;lt;EOF &amp;gt; /etc/sysctl.d/k8s.conf
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+
+sysctl --system
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;配置主机名和解析&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;# 在 master 节点
+hostnamectl set-hostname k8s-master
+
+# 在 node1 节点
+hostnamectl set-hostname k8s-node1
+
+# 在 node2 节点
+hostnamectl set-hostname k8s-node2
+
+# 所有节点添加 hosts 解析
+cat &amp;gt;&amp;gt; /etc/hosts &amp;lt;&amp;lt;EOF
+192.168.100.20 k8s-master
+192.168.100.21 k8s-node1
+192.168.100.22 k8s-node2
+192.168.100.14 reg.westos.org
+EOF
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;配置 k8s yum 源&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;cat &amp;lt;&amp;lt;EOF &amp;gt; /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.33/rpm/
+enabled=1
+gpgcheck=0
+EOF
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;配置 SSH 免密（可选）&lt;/h3&gt;
+&lt;p&gt;方便后续操作，写个脚本批量配置：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;#!/bin/bash
+USER=&quot;root&quot;
+PASSWORD=&quot;123&quot;
+PORT=22
+HOSTS=(
+  192.168.100.20
+  192.168.100.21
+  192.168.100.22
+)
+
+[ ! -f ~/.ssh/id_rsa.pub ] &amp;amp;&amp;amp; ssh-keygen -t rsa -N &quot;&quot; -f ~/.ssh/id_rsa
+
+for entry in &quot;${HOSTS[@]}&quot;; do
+  host=&quot;$entry&quot;
+  port=&quot;$PORT&quot;
+  [[ &quot;$entry&quot; == *:* ]] &amp;amp;&amp;amp; host=&quot;${entry%%:*}&quot; &amp;amp;&amp;amp; port=&quot;${entry##*:}&quot;
+  sshpass -p &quot;$PASSWORD&quot; ssh-copy-id -o StrictHostKeyChecking=no -p &quot;$port&quot; &quot;$USER@$host&quot;
+done
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;配置 IPVS&lt;/h3&gt;
+&lt;p&gt;k8s 用 IPVS 做负载均衡，需要加载相关内核模块：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;cat &amp;gt; /etc/modules-load.d/ipvs.conf &amp;lt;&amp;lt;EOF
+ip_vs
+ip_vs_rr
+ip_vs_wrr
+ip_vs_sh
+nf_conntrack
+overlay
+br_netfilter
+EOF
+
+# 立即加载
+modprobe ip_vs ip_vs_rr ip_vs_wrr ip_vs_sh nf_conntrack overlay br_netfilter
+
+# 安装管理工具
+dnf install -y ipvsadm ipset
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;安装 containerd&lt;/h2&gt;
+&lt;p&gt;所有节点安装：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;yum install -y containerd.io cri-tools
+containerd config default &amp;gt; /etc/containerd/config.toml
+
+# 启用 systemd cgroup 驱动
+sed -i &apos;s#SystemdCgroup = false#SystemdCgroup = true#g&apos; /etc/containerd/config.toml
+
+systemctl enable --now containerd
+
+# 配置 crictl
+cat &amp;lt;&amp;lt;EOF &amp;gt; /etc/crictl.yaml
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint: unix:///run/containerd/containerd.sock
+EOF
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;配置 Harbor 证书&lt;/h3&gt;
+&lt;p&gt;让 containerd 信任 Harbor 的证书：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;# 所有节点创建目录
+mkdir -p /etc/containerd/certs.d/reg.westos.org
+
+# 在 harbor 节点上，将证书复制到各节点
+scp /etc/docker/certs.d/reg.westos.org/ca.crt 192.168.100.20:/etc/containerd/certs.d/reg.westos.org/
+scp /etc/docker/certs.d/reg.westos.org/ca.crt 192.168.100.21:/etc/containerd/certs.d/reg.westos.org/
+scp /etc/docker/certs.d/reg.westos.org/ca.crt 192.168.100.22:/etc/containerd/certs.d/reg.westos.org/
+
+# 在所有 k8s 节点上，修改 containerd 配置
+sed -i &apos;s#config_path = &quot;&quot;#config_path = &quot;/etc/containerd/certs.d&quot;#g&apos; /etc/containerd/config.toml
+sed -i &apos;s#registry.k8s.io/pause:3.8#reg.westos.org/k8s/pause:3.10#g&apos; /etc/containerd/config.toml
+
+systemctl restart containerd
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;准备镜像&lt;/h2&gt;
+&lt;h3&gt;安装 k8s 组件&lt;/h3&gt;
+&lt;p&gt;所有节点安装：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;yum install -y kubelet kubeadm kubectl
+systemctl enable --now kubelet
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;查看需要的镜像&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;kubeadm config images list --image-repository registry.aliyuncs.com/google_containers --kubernetes-version v1.33.5
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;会列出这些镜像：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;kube-apiserver:v1.33.5&lt;/li&gt;
+&lt;li&gt;kube-controller-manager:v1.33.5&lt;/li&gt;
+&lt;li&gt;kube-scheduler:v1.33.5&lt;/li&gt;
+&lt;li&gt;kube-proxy:v1.33.5&lt;/li&gt;
+&lt;li&gt;coredns:v1.12.0&lt;/li&gt;
+&lt;li&gt;pause:3.10&lt;/li&gt;
+&lt;li&gt;etcd:3.5.21-0&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;推送镜像到 Harbor&lt;/h3&gt;
+&lt;p&gt;在 harbor 节点上拉取镜像并推送：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;# 从阿里云拉取
+docker pull registry.aliyuncs.com/google_containers/pause:3.10
+docker pull registry.aliyuncs.com/google_containers/kube-apiserver:v1.33.5
+docker pull registry.aliyuncs.com/google_containers/kube-controller-manager:v1.33.5
+docker pull registry.aliyuncs.com/google_containers/kube-scheduler:v1.33.5
+docker pull registry.aliyuncs.com/google_containers/kube-proxy:v1.33.5
+docker pull registry.aliyuncs.com/google_containers/coredns:v1.12.0
+docker pull registry.aliyuncs.com/google_containers/etcd:3.5.21-0
+
+# 在 Harbor Web 界面创建 k8s 项目（设为公开）
+
+# 批量打标签
+docker images |grep google_containers | awk &apos;{print $1&quot;:&quot;$2}&apos; | awk -F/ &apos;{system(&quot;docker tag &quot;$0&quot; reg.westos.org/k8s/&quot;$3&quot;&quot;)}&apos;
+
+# 批量推送
+docker images |grep reg.westos.org/k8s | awk &apos;{system(&quot;docker push &quot;$1&quot;:&quot;$2&quot;&quot;)}&apos;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;初始化 Master 节点&lt;/h2&gt;
+&lt;p&gt;在 k8s-master 上执行：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubeadm init \
+  --pod-network-cidr=10.244.0.0/16 \
+  --image-repository reg.westos.org/k8s \
+  --kubernetes-version v1.33.5
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;初始化成功后会输出 join 命令，记下来给 node 节点用：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubeadm join 192.168.100.20:6443 --token afmhpb.r5vcfet4ro49kg5i \
+  --discovery-token-ca-cert-hash sha256:69a36f40befb0f36e29c1afae2291be7ff652672ec730728aebb90b73f436192
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;配置 kubectl&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;mkdir -p $HOME/.kube
+cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+chown $(id -u):$(id -g) $HOME/.kube/config
+
+# 命令补全
+echo &quot;source &amp;lt;(kubectl completion bash)&quot; &amp;gt;&amp;gt; ~/.bashrc
+source ~/.bashrc
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;验证一下：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl get nodes
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;此时 master 节点状态是 &lt;code&gt;NotReady&lt;/code&gt;，因为还没装网络插件。&lt;/p&gt;
+&lt;h2&gt;安装 Calico 网络插件&lt;/h2&gt;
+&lt;h3&gt;准备 Calico 镜像&lt;/h3&gt;
+&lt;p&gt;在 harbor 节点上：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;docker pull quay.io/calico/cni:v3.31.0
+docker pull quay.io/calico/node:v3.31.0
+docker pull quay.io/calico/kube-controllers:v3.31.0
+
+# 在 Harbor Web 界面创建 calico 项目
+
+# 打标签并推送
+docker images |grep calico | awk &apos;{print $1&quot;:&quot;$2}&apos; | awk -F/ &apos;{system(&quot;docker tag &quot;$0&quot; reg.westos.org/calico/&quot;$3&quot;&quot;)}&apos;
+docker images |grep reg.westos.org/calico | awk &apos;{system(&quot;docker push &quot;$1&quot;:&quot;$2&quot;&quot;)}&apos;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;部署 Calico&lt;/h3&gt;
+&lt;p&gt;在 master 节点上：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;wget https://raw.githubusercontent.com/projectcalico/calico/v3.31.0/manifests/calico.yaml
+sed -i &apos;s#quay.io/#reg.westos.org/#g&apos; calico.yaml
+kubectl apply -f calico.yaml
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;等待 calico pods 启动：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl get pod -A |grep calico
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;全部 Running 后，再查看节点状态：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl get node
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;master 节点应该变成 &lt;code&gt;Ready&lt;/code&gt; 状态了。&lt;/p&gt;
+&lt;h2&gt;加入 Worker 节点&lt;/h2&gt;
+&lt;p&gt;在 node1 和 node2 上执行之前保存的 join 命令：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubeadm join 192.168.100.20:6443 --token afmhpb.r5vcfet4ro49kg5i \
+  --discovery-token-ca-cert-hash sha256:69a36f40befb0f36e29c1afae2291be7ff652672ec730728aebb90b73f436192
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;回到 master 节点查看：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubectl get node
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;输出：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;NAME         STATUS   ROLES           AGE     VERSION
+k8s-master   Ready    control-plane   35m     v1.33.5
+k8s-node1    Ready    &amp;lt;none&amp;gt;          2m      v1.33.5
+k8s-node2    Ready    &amp;lt;none&amp;gt;          6m22s   v1.33.5
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;全部 Ready，集群就搭好了。&lt;/p&gt;
+&lt;h2&gt;常见问题&lt;/h2&gt;
+&lt;p&gt;遇到过几次镜像拉取失败的问题，排查下来是这几个原因：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;containerd 没配置 Harbor 证书路径&lt;/li&gt;
+&lt;li&gt;Harbor 项目权限设为私有了（改成公开或配置 imagePullSecrets）&lt;/li&gt;
+&lt;li&gt;节点 &lt;code&gt;/etc/hosts&lt;/code&gt; 没有 Harbor 域名解析&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;另外如果 token 过期了，可以在 master 上重新生成：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;kubeadm token create --print-join-command
+&lt;/code&gt;&lt;/pre&gt;
+</content:encoded></item><item><title>搭建 Harbor 私有镜像仓库</title><link>https://dev-null-sec.github.io/posts/%E6%90%AD%E5%BB%BAharbor%E7%A7%81%E6%9C%89%E9%95%9C%E5%83%8F%E4%BB%93%E5%BA%93/</link><guid isPermaLink="true">https://dev-null-sec.github.io/posts/%E6%90%AD%E5%BB%BAharbor%E7%A7%81%E6%9C%89%E9%95%9C%E5%83%8F%E4%BB%93%E5%BA%93/</guid><description>记录一下在内网环境搭建 Harbor 私有镜像仓库的过程，包括 HTTPS 配置和 Trivy 扫描</description><pubDate>Thu, 07 Nov 2024 00:00:00 GMT</pubDate><content:encoded>&lt;h2&gt;环境&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;服务器：&lt;code&gt;192.168.100.14&lt;/code&gt;，已装好 Docker&lt;/li&gt;
+&lt;li&gt;域名：&lt;code&gt;reg.westos.org&lt;/code&gt;（内网域名）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2&gt;生成证书&lt;/h2&gt;
+&lt;p&gt;Harbor 需要 HTTPS，先生成自签名证书。&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;mkdir certs
+openssl req -newkey rsa:4096 -nodes -sha256 \
+  -keyout certs/westos.org.key \
+  -addext &quot;subjectAltName = DNS:reg.westos.org&quot; \
+  -x509 -days 365 \
+  -out certs/westos.org.crt
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;然后把证书复制到 &lt;code&gt;/data&lt;/code&gt; 目录，Harbor 会从这里读取：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;mkdir /data
+cp -r certs /data
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;安装 Harbor&lt;/h2&gt;
+&lt;p&gt;去 &lt;a href=&quot;https://github.com/goharbor/harbor/releases&quot;&gt;Harbor Release&lt;/a&gt; 下载离线安装包：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;wget https://github.com/goharbor/harbor/releases/download/v2.14.0/harbor-offline-installer-v2.14.0.tgz
+tar zxf harbor-offline-installer-v2.14.0.tgz
+cd harbor/
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;复制配置模板并修改：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;cp harbor.yml.tmpl harbor.yml
+vim harbor.yml
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;主要改这几个地方：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;hostname: reg.westos.org
+
+http:
+  port: 80
+
+https:
+  port: 443
+  certificate: /data/certs/westos.org.crt
+  private_key: /data/certs/westos.org.key
+
+harbor_admin_password: 12345  # 改成你的密码
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;执行安装，带上 &lt;code&gt;--with-trivy&lt;/code&gt; 参数会一起安装漏洞扫描工具：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;./install.sh --with-trivy
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;等一会儿，看到 &lt;code&gt;Harbor has been installed and started successfully&lt;/code&gt; 就好了。&lt;/p&gt;
+&lt;h2&gt;Docker 客户端配置&lt;/h2&gt;
+&lt;p&gt;直接 &lt;code&gt;docker login&lt;/code&gt; 会报证书错误，因为是自签名的。需要让 Docker 信任这个证书：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;mkdir -p /etc/docker/certs.d/reg.westos.org
+cp /data/certs/westos.org.crt /etc/docker/certs.d/reg.westos.org/ca.crt
+systemctl restart docker
+
+# 重启后 Harbor 也要重新启动
+cd ~/harbor
+docker compose up -d
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;现在可以登录了：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;docker login reg.westos.org
+# Username: admin
+# Password: 12345
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;使用&lt;/h2&gt;
+&lt;p&gt;浏览器访问 &lt;code&gt;https://reg.westos.org&lt;/code&gt;，用 admin 账户登录。&lt;/p&gt;
+&lt;p&gt;先创建一个项目，比如叫 &lt;code&gt;myproject&lt;/code&gt;，选私有。&lt;/p&gt;
+&lt;p&gt;然后试着推送一个镜像：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;docker pull nginx:latest
+docker tag nginx:latest reg.westos.org/myproject/nginx:v1.0
+docker push reg.westos.org/myproject/nginx:v1.0
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;在 Web 界面里就能看到推送的镜像了。&lt;/p&gt;
+&lt;p&gt;拉取也很简单：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;docker pull reg.westos.org/myproject/nginx:v1.0
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2&gt;Trivy 扫描问题&lt;/h2&gt;
+&lt;p&gt;在 Web 界面点&quot;扫描&quot;按钮的时候，Trivy 会报错说下载不了漏洞库。因为它要从 GitHub 拉数据，国内网络不太行。&lt;/p&gt;
+&lt;p&gt;解决办法是给它配个代理：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;cd ~/harbor
+vim ./common/config/trivy-adapter/env
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;加上代理配置（换成你自己的代理地址）：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;HTTP_PROXY=http://192.168.10.141:7897
+HTTPS_PROXY=http://192.168.10.141:7897
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;然后重启：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;docker compose down
+docker compose up -d
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;现在扫描应该能正常工作了。扫描结果会显示镜像里有哪些漏洞，方便评估风险。&lt;/p&gt;
+&lt;h2&gt;其他机器使用&lt;/h2&gt;
+&lt;p&gt;如果其他机器要用这个仓库，需要：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;配置域名解析（&lt;code&gt;/etc/hosts&lt;/code&gt; 或 DNS）&lt;/li&gt;
+&lt;li&gt;复制证书到客户端：&lt;pre&gt;&lt;code&gt;scp root@192.168.100.14:/data/certs/westos.org.crt /etc/docker/certs.d/reg.westos.org/ca.crt
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/li&gt;
+&lt;li&gt;登录即可&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;就这样，基本的 Harbor 仓库就搭好了。&lt;/p&gt;
+</content:encoded></item></channel></rss>
