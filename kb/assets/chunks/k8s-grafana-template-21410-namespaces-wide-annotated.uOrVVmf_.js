@@ -1,0 +1,1 @@
+const s="/kb/assets/k8s-prometheus-query-kube-pod-info-annotated.Bn7opx2B.png",a="/kb/assets/k8s-grafana-template-13332-deployments-detail-wide-annotated.DJdGZnnO.png",t="/kb/assets/k8s-grafana-template-21410-namespaces-wide-annotated.CiVPTDmd.png";export{s as _,a,t as b};
