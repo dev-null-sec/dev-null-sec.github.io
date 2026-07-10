@@ -1,0 +1,50 @@
+import{bQ as a,aL as t,u as n,G as p}from"./chunks/framework.D06dwy5q.js";const k=JSON.parse('{"title":"51｜需求分析与项目结构","description":"","frontmatter":{},"headers":[],"relativePath":"20.Python全栈开发/07.项目实战/51-需求分析与项目结构.md","filePath":"20.Python全栈开发/07.项目实战/51-需求分析与项目结构.md","lastUpdated":null}'),d={name:"20.Python全栈开发/07.项目实战/51-需求分析与项目结构.md"};function e(i,s,l,c,r,h){return t(),n("div",null,[...s[0]||(s[0]=[p(`<h1 id="_51-需求分析与项目结构" tabindex="-1">51｜需求分析与项目结构 <a class="header-anchor" href="#_51-需求分析与项目结构" aria-label="Permalink to &quot;51｜需求分析与项目结构&quot;">​</a></h1><p>前面 50 篇把前端基础、后端基础、后端进阶的知识点逐个拆开讲。从这篇开始，把这些能力合到一个真实项目里——一个运维管理平台（ops-console），管理服务器资产、执行任务、记录事件、做权限控制。不追求功能多，核心是把全栈链路串起来：前端页面 → HTTP 请求 → 后端接口 → 数据库 → 返回数据 → 前端渲染。</p><h2 id="一、功能范围" tabindex="-1">一、功能范围 <a class="header-anchor" href="#一、功能范围" aria-label="Permalink to &quot;一、功能范围&quot;">​</a></h2><table tabindex="0"><thead><tr><th>模块</th><th>功能</th><th>涉及知识点</th></tr></thead><tbody><tr><td>用户认证</td><td>登录、Token、权限控制</td><td>JWT、依赖注入、密码哈希</td></tr><tr><td>资产管理</td><td>服务器增删改查</td><td>CRUD、分页、搜索</td></tr><tr><td>任务管理</td><td>对资产执行操作</td><td>后台任务、状态追踪</td></tr><tr><td>事件记录</td><td>谁在什么时间做了什么</td><td>审计日志、关联查询</td></tr><tr><td>前端界面</td><td>登录页、列表页、表单页、详情页</td><td>Vue 组件、路由、状态管理</td></tr></tbody></table><p>不做复杂功能：没有实时通知、没有图表可视化、没有多租户。每个模块用到的知识都在前面 50 篇覆盖过，这里是把它们组装起来。</p><h2 id="二、技术选型" tabindex="-1">二、技术选型 <a class="header-anchor" href="#二、技术选型" aria-label="Permalink to &quot;二、技术选型&quot;">​</a></h2><table tabindex="0"><thead><tr><th>层</th><th>技术</th><th>选型理由</th></tr></thead><tbody><tr><td>后端框架</td><td>FastAPI</td><td>前面基础篇一直在用，类型提示 + 自动文档</td></tr><tr><td>数据库</td><td>SQLite（开发）/ PostgreSQL（生产）</td><td>开发用 SQLite 省事，生产换 PostgreSQL</td></tr><tr><td>ORM</td><td>SQLAlchemy</td><td>Python 最主流的 ORM</td></tr><tr><td>前端框架</td><td>Vue 3</td><td>前端基础篇学的，组件化 + 数据驱动</td></tr><tr><td>前端构建</td><td>Vite</td><td>开发服务器 + 打包</td></tr><tr><td>HTTP 请求</td><td>fetch</td><td>前端 18 篇封装的 request 函数</td></tr><tr><td>认证</td><td>JWT</td><td>后端 38 篇的方案</td></tr><tr><td>部署</td><td>Docker + Nginx</td><td>58 篇详细讲</td></tr></tbody></table><h2 id="三、项目目录结构" tabindex="-1">三、项目目录结构 <a class="header-anchor" href="#三、项目目录结构" aria-label="Permalink to &quot;三、项目目录结构&quot;">​</a></h2><p>前后端在同一个代码仓库，各自独立目录：</p><div class="language-text vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang">text</span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span>ops-console/</span></span>
+<span class="line"><span>├── backend/                 # 后端</span></span>
+<span class="line"><span>│   ├── app/</span></span>
+<span class="line"><span>│   │   ├── main.py          # FastAPI 应用入口</span></span>
+<span class="line"><span>│   │   ├── config.py        # 配置（pydantic-settings）</span></span>
+<span class="line"><span>│   │   ├── database.py      # 数据库引擎和会话</span></span>
+<span class="line"><span>│   │   ├── models.py        # SQLAlchemy 模型</span></span>
+<span class="line"><span>│   │   ├── schemas.py       # Pydantic 请求/响应模型</span></span>
+<span class="line"><span>│   │   ├── auth.py          # 认证（JWT、密码哈希）</span></span>
+<span class="line"><span>│   │   └── routers/         # 路由分模块</span></span>
+<span class="line"><span>│   │       ├── __init__.py</span></span>
+<span class="line"><span>│   │       ├── assets.py    # 资产接口</span></span>
+<span class="line"><span>│   │       ├── tasks.py     # 任务接口</span></span>
+<span class="line"><span>│   │       ├── events.py    # 事件接口</span></span>
+<span class="line"><span>│   │       └── users.py     # 用户接口（登录）</span></span>
+<span class="line"><span>│   ├── alembic/             # 数据库迁移</span></span>
+<span class="line"><span>│   ├── tests/               # 测试</span></span>
+<span class="line"><span>│   ├── pyproject.toml</span></span>
+<span class="line"><span>│   └── .env                 # 配置（不进 Git）</span></span>
+<span class="line"><span>│</span></span>
+<span class="line"><span>├── frontend/                # 前端</span></span>
+<span class="line"><span>│   ├── src/</span></span>
+<span class="line"><span>│   │   ├── main.js          # Vue 入口</span></span>
+<span class="line"><span>│   │   ├── App.vue          # 根组件</span></span>
+<span class="line"><span>│   │   ├── api/             # API 封装</span></span>
+<span class="line"><span>│   │   │   ├── request.js   # 基础请求函数</span></span>
+<span class="line"><span>│   │   │   ├── assets.js    # 资产相关接口</span></span>
+<span class="line"><span>│   │   │   └── tasks.js     # 任务相关接口</span></span>
+<span class="line"><span>│   │   ├── components/      # 通用组件</span></span>
+<span class="line"><span>│   │   │   ├── DataTable.vue</span></span>
+<span class="line"><span>│   │   │   ├── SearchForm.vue</span></span>
+<span class="line"><span>│   │   │   └── Pagination.vue</span></span>
+<span class="line"><span>│   │   ├── views/           # 页面组件</span></span>
+<span class="line"><span>│   │   │   ├── LoginView.vue</span></span>
+<span class="line"><span>│   │   │   ├── AssetList.vue</span></span>
+<span class="line"><span>│   │   │   ├── AssetForm.vue</span></span>
+<span class="line"><span>│   │   │   ├── TaskList.vue</span></span>
+<span class="line"><span>│   │   │   └── EventLog.vue</span></span>
+<span class="line"><span>│   │   ├── router/          # Vue Router 配置</span></span>
+<span class="line"><span>│   │   ├── stores/          # Pinia 状态管理</span></span>
+<span class="line"><span>│   │   └── assets/          # 静态资源</span></span>
+<span class="line"><span>│   ├── index.html</span></span>
+<span class="line"><span>│   ├── package.json</span></span>
+<span class="line"><span>│   └── vite.config.js</span></span>
+<span class="line"><span>│</span></span>
+<span class="line"><span>├── docker-compose.yml       # 编排配置</span></span>
+<span class="line"><span>├── nginx.conf               # Nginx 配置</span></span>
+<span class="line"><span>└── README.md</span></span></code></pre></div><h2 id="四、api-设计概览" tabindex="-1">四、API 设计概览 <a class="header-anchor" href="#四、api-设计概览" aria-label="Permalink to &quot;四、API 设计概览&quot;">​</a></h2><table tabindex="0"><thead><tr><th>方法</th><th>路径</th><th>功能</th><th>认证</th></tr></thead><tbody><tr><td>POST</td><td><code>/api/login</code></td><td>登录</td><td>否</td></tr><tr><td>GET</td><td><code>/api/me</code></td><td>当前用户信息</td><td>是</td></tr><tr><td>GET</td><td><code>/api/assets</code></td><td>资产列表</td><td>是</td></tr><tr><td>POST</td><td><code>/api/assets</code></td><td>创建资产</td><td>是</td></tr><tr><td>GET</td><td><code>/api/assets/{id}</code></td><td>资产详情</td><td>是</td></tr><tr><td>PUT</td><td><code>/api/assets/{id}</code></td><td>更新资产</td><td>是</td></tr><tr><td>DELETE</td><td><code>/api/assets/{id}</code></td><td>删除资产</td><td>是（管理员）</td></tr><tr><td>GET</td><td><code>/api/tasks</code></td><td>任务列表</td><td>是</td></tr><tr><td>POST</td><td><code>/api/tasks</code></td><td>创建任务</td><td>是</td></tr><tr><td>GET</td><td><code>/api/tasks/{id}</code></td><td>任务详情</td><td>是</td></tr><tr><td>GET</td><td><code>/api/events</code></td><td>事件日志</td><td>是（管理员）</td></tr></tbody></table><h2 id="五、开发启动方式" tabindex="-1">五、开发启动方式 <a class="header-anchor" href="#五、开发启动方式" aria-label="Permalink to &quot;五、开发启动方式&quot;">​</a></h2><p>后端：</p><div class="language-bash vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang">bash</span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;">cd</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF;"> backend</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0;">uv</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF;"> run</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF;"> uvicorn</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF;"> app.main:app</span><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;"> --reload</span><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;"> --port</span><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;"> 8000</span></span></code></pre></div><p>前端：</p><div class="language-bash vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang">bash</span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span style="--shiki-light:#005CC5;--shiki-dark:#79B8FF;">cd</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF;"> frontend</span></span>
+<span class="line"><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0;">npm</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF;"> run</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECBFF;"> dev</span><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;">   # 端口 5173</span></span></code></pre></div><p>浏览器打开 <code>http://localhost:5173</code>，前端通过 <code>fetch</code> 调用 <code>http://localhost:8000/api/*</code>。</p>`,18)])])}const u=a(d,[["render",e]]);export{k as __pageData,u as default};

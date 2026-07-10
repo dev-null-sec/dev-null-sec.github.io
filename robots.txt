@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /_astro/
+
+Sitemap: https://blog.devnu11.cn/sitemap-index.xml
